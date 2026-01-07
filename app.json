@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "driver-duty-app",
+    "name": "Driver Duty Management",
     "slug": "driver-duty-app",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -9,9 +9,23 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ampl.driverduty",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "AMPL needs your location to track duty progress and help you navigate to pickup points.",
+        "NSLocationAlwaysUsageDescription": "AMPL tracks your location to provide real-time updates to the dispatch office during active duties.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "AMPL tracks your location to provide real-time updates to the dispatch office during active duties."
+      }
     },
     "android": {
+      "package": "com.ampl.driverduty",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "INTERNET"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -27,6 +41,12 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow AMPL to use your location."
+        }
+      ],
       [
         "expo-splash-screen",
         {
