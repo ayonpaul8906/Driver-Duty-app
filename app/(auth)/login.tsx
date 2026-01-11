@@ -56,7 +56,7 @@ export default function LoginScreen() {
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <Text style={styles.title}>Driver Duty Management</Text>
+      <Text style={styles.title}>DutySync</Text>
 
       <TextInput
         placeholder="Email"

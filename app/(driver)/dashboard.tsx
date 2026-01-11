@@ -1,33 +1,33 @@
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import * as Location from 'expo-location'; // Added for GPS
+import { useRouter } from "expo-router";
+import { signOut } from "firebase/auth";
+import {
+  collection,
+  doc,
+  increment,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where
+} from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
-  ScrollView,
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Alert,
   ActivityIndicator,
+  Alert,
   Modal,
   SafeAreaView,
+  ScrollView,
   StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
-import { signOut } from "firebase/auth";
-import { 
-  collection, 
-  query, 
-  where, 
-  onSnapshot, 
-  doc, 
-  updateDoc, 
-  increment,
-  serverTimestamp
-} from "firebase/firestore";
-import * as Location from 'expo-location'; // Added for GPS
-import { auth, db } from "../../services/firebase";
-import { useRouter } from "expo-router";
-import { MaterialCommunityIcons } from "@expo/vector-icons";
-import TaskCard from "../../components/TaskCard";
 import FormInput from "../../components/FormInput";
+import TaskCard from "../../components/TaskCard";
+import { auth, db } from "../../services/firebase";
 
 export default function DriverDashboard() {
   const router = useRouter();
@@ -142,6 +142,28 @@ export default function DriverDashboard() {
     }
   };
 
+  // --- NEW: Start Journey Function ---
+  const handleStartJourney = async (task: any) => {
+    try {
+      const taskRef = doc(db, "tasks", task.id);
+      const driverRef = doc(db, "drivers", auth.currentUser!.uid);
+
+      await updateDoc(taskRef, {
+        status: "in-progress",
+        startedAt: serverTimestamp()
+      });
+
+      await updateDoc(driverRef, {
+        activeStatus: "in-progress", // Informs Admin Map/Dashboard
+        active: false // Set active to false when journey starts
+      });
+
+      Alert.alert("Journey Started", "Safe driving! Your status is now 'In Progress'.");
+    } catch (error) {
+      Alert.alert("Error", "Failed to start journey. Try again.");
+    }
+  };
+
   const handleCompleteTask = async () => {
     const { openingKm, closingKm, fuelQuantity, amount } = completionData;
     if (!openingKm || !closingKm) {
@@ -161,6 +183,7 @@ export default function DriverDashboard() {
     try {
       setSubmitting(true);
       const taskRef = doc(db, "tasks", selectedTask.id);
+      const driverRef = doc(db, "drivers", auth.currentUser!.uid);
       
       await updateDoc(taskRef, {
         status: "completed",
@@ -172,21 +195,22 @@ export default function DriverDashboard() {
         completedAt: serverTimestamp(),
       });
 
+      // Reset Driver status to 'active' for new duties
+      await updateDoc(driverRef, {
+        activeStatus: "active",
+        totalKilometers: increment(totalTripKms)
+      });
+
       if (auth.currentUser) {
         const userRef = doc(db, "users", auth.currentUser.uid);
         await updateDoc(userRef, {
           totalKms: increment(totalTripKms)
         });
-
-        const driverRef = doc(db, "drivers", auth.currentUser.uid);
-        await updateDoc(driverRef, {
-          totalKilometers: increment(totalTripKms)
-        });
       }
 
       setModalVisible(false);
       setCompletionData({ openingKm: "", closingKm: "", fuelQuantity: "", amount: "" });
-      Alert.alert("Success", "Duty marked as completed!");
+      Alert.alert("Success", "Journey completed and KM logged!");
     } catch (error) {
       Alert.alert("Error", "Failed to update record.");
     } finally {
@@ -231,7 +255,7 @@ export default function DriverDashboard() {
               <MaterialCommunityIcons name="clock-alert" size={22} color="#F59E0B" />
             </View>
             <Text style={styles.statValue}>{driverStats.pending}</Text>
-            <Text style={styles.statLabel}>Incomplete</Text>
+            <Text style={styles.statLabel}>Duties</Text>
           </View>
         </View>
 
@@ -247,19 +271,44 @@ export default function DriverDashboard() {
           </View>
         ) : (
           tasks.map((task) => (
-            <TaskCard
-              key={task.id}
-              passenger={task.passenger?.name || task.passengerName}
-              pickup={task.pickup}
-              drop={task.drop}
-              status={task.status}
-              onPress={() => {
-                if (task.status !== "completed") {
-                  setSelectedTask(task);
-                  setModalVisible(true);
-                }
-              }}
-            />
+            <View key={task.id} style={styles.taskWrapper}>
+              <TaskCard
+                passenger={task.passenger?.name || task.passengerName}
+                pickup={task.pickup}
+                drop={task.drop}
+                status={task.status}
+                onPress={() => {
+                  if (task.status === "in-progress") {
+                    setSelectedTask(task);
+                    setModalVisible(true);
+                  }
+                }}
+              />
+              
+              {/* Dynamic Action Buttons Attached to Task Card */}
+              {task.status === "assigned" && (
+                <TouchableOpacity 
+                  style={[styles.actionBtn, { backgroundColor: "#2563EB" }]} 
+                  onPress={() => handleStartJourney(task)}
+                >
+                  <MaterialCommunityIcons name="play-circle" size={22} color="#fff" />
+                  <Text style={styles.actionBtnText}>START JOURNEY</Text>
+                </TouchableOpacity>
+              )}
+
+              {task.status === "in-progress" && (
+                <TouchableOpacity 
+                  style={[styles.actionBtn, { backgroundColor: "#22C55E" }]} 
+                  onPress={() => {
+                    setSelectedTask(task);
+                    setModalVisible(true);
+                  }}
+                >
+                  <MaterialCommunityIcons name="flag-checkered" size={22} color="#fff" />
+                  <Text style={styles.actionBtnText}>COMPLETE JOURNEY</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           ))
         )}
         <View style={{ height: 40 }} />
@@ -321,7 +370,7 @@ export default function DriverDashboard() {
                 onPress={handleCompleteTask}
                 disabled={submitting}
               >
-                {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitBtnText}>Confirm Completion</Text>}
+                {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitBtnText}>Finish & Complete Duty</Text>}
               </TouchableOpacity>
             </ScrollView>
           </View>
@@ -350,6 +399,35 @@ const styles = StyleSheet.create({
   statValue: { fontSize: 18, fontWeight: "bold", color: "#1E293B" },
   statLabel: { fontSize: 10, color: "#64748B", fontWeight: "700", textTransform: "uppercase", marginTop: 2 },
   sectionTitle: { fontSize: 18, fontWeight: "bold", color: "#1E293B", marginBottom: 15 },
+  
+  // Updated Task Wrapper & Integrated Button
+  taskWrapper: { 
+    marginBottom: 20,
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    elevation: 3,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+  },
+  actionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 15,
+    borderBottomLeftRadius: 20,
+    borderBottomRightRadius: 20,
+    marginTop: -10, // Pulls the button into the card visually
+    gap: 8,
+  },
+  actionBtnText: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 14,
+    letterSpacing: 0.5,
+  },
+
   emptyContainer: { alignItems: "center", marginTop: 40 },
   emptyTitle: { fontSize: 18, fontWeight: "bold", color: "#475569", marginTop: 15 },
   emptySub: { fontSize: 14, color: "#94A3B8", textAlign: "center", marginTop: 5 },

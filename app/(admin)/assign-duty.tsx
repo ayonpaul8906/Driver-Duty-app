@@ -42,17 +42,27 @@ export default function AssignDuty() {
     contact: ""
   });
 
-  // Fetch active drivers from the 'drivers' collection
+  // Fetch drivers who are active AND not currently 'in-progress'
   useEffect(() => {
     const fetchDrivers = async () => {
       try {
-        // Querying drivers based on the 'active' field in your Firestore
-        const q = query(collection(db, "drivers"), where("active", "==", true));
+        /**
+         * UPDATED LOGIC:
+         * We filter for drivers where:
+         * 1. active == true (Authorized)
+         * 2. activeStatus == "active" (Not currently on a journey)
+         */
+        const q = query(
+          collection(db, "drivers"), 
+          where("active", "==", true),
+          where("activeStatus", "==", "active") 
+        );
+        
         const querySnapshot = await getDocs(q);
         
         const driversList = querySnapshot.docs.map(doc => ({
           label: doc.data().name || "Unnamed Driver",
-          value: doc.id // This is the Driver's UID
+          value: doc.id 
         }));
 
         setDriverOptions(driversList);
@@ -68,7 +78,6 @@ export default function AssignDuty() {
   }, []);
 
   const handleAssign = async () => {
-    // Validation: Ensure driver and basic details are present
     if (!dutyData.driverId || !passenger.name || !dutyData.pickup) {
       Alert.alert("Missing Fields", "Please select a driver and fill in passenger/pickup details.");
       return;
@@ -76,16 +85,15 @@ export default function AssignDuty() {
 
     setLoading(true);
     try {
-      // Saving to 'tasks' collection with the driver's unique ID
       await addDoc(collection(db, "tasks"), {
-        driverId: dutyData.driverId, // CRITICAL: Links task to Driver's Dashboard
+        driverId: dutyData.driverId, 
         driverName: dutyData.driverName,
         pickup: dutyData.pickup,
         drop: dutyData.drop,
         date: dutyData.date,
         time: dutyData.time,
         notes: dutyData.notes,
-        passenger: passenger, // Nested passenger details modal data
+        passenger: passenger, 
         status: "assigned",
         kilometers: 0,
         createdAt: serverTimestamp()
@@ -112,7 +120,6 @@ export default function AssignDuty() {
         </View>
 
         <View style={styles.section}>
-          {/* --- Driver Dropdown --- */}
           <Text style={styles.label}>Select Driver</Text>
           <Dropdown
             style={styles.dropdown}
@@ -203,7 +210,6 @@ export default function AssignDuty() {
         </TouchableOpacity>
       </ScrollView>
 
-      {/* --- Passenger Details Modal --- */}
       <Modal visible={modalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -265,8 +271,6 @@ const styles = StyleSheet.create({
   section: { backgroundColor: "#fff", padding: 15, borderRadius: 20, elevation: 3, shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 10 },
   label: { fontSize: 13, fontWeight: "700", color: "#475569", marginBottom: 8, marginLeft: 4, textTransform: "uppercase" },
   row: { flexDirection: "row" },
-  
-  // Professional Dropdown Styling
   dropdown: {
     height: 55,
     borderColor: '#E2E8F0',
@@ -281,7 +285,6 @@ const styles = StyleSheet.create({
   selectedTextStyle: { fontSize: 16, color: '#1E293B', fontWeight: "500" },
   inputSearchStyle: { height: 45, fontSize: 16, borderRadius: 10 },
   iconStyle: { width: 22, height: 22 },
-
   passengerToggle: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -309,7 +312,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 }
   },
   buttonText: { color: "#FFFFFF", fontSize: 17, fontWeight: "bold" },
-  
   modalOverlay: { flex: 1, backgroundColor: "rgba(15, 23, 42, 0.7)", justifyContent: "flex-end" },
   modalContent: { backgroundColor: "#fff", borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: 25, maxHeight: "85%" },
   modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 25 },
