@@ -1,20 +1,20 @@
 import React, { useEffect, useState } from "react";
-import { 
-  View, 
-  Text, 
-  TouchableOpacity, 
-  StyleSheet, 
-  ScrollView, 
-  SafeAreaView, 
-  StatusBar 
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  StatusBar,
+  Dimensions,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { signOut } from "firebase/auth";
 import { collection, onSnapshot, query } from "firebase/firestore";
 import { auth, db } from "../../services/firebase";
 import { useRouter } from "expo-router";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
-// Define local types for stats
 interface DashboardStats {
   total: number;
   completed: number;
@@ -31,191 +31,232 @@ export default function AdminDashboard() {
     pending: 0,
   });
 
-  // 1. Real-time stats listener for the entire fleet
+  // Keep the exact same real-time filtering logic
   useEffect(() => {
     const q = query(collection(db, "tasks"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const docs = snapshot.docs.map(doc => doc.data());
-      setStats({
-        total: docs.length,
-        completed: docs.filter(d => d.status === "completed").length,
-        inProgress: docs.filter(d => d.status === "in-progress").length,
-        pending: docs.filter(d => d.status === "assigned").length,
+    const unsub = onSnapshot(q, (snapshot) => {
+      const today = new Date().toDateString();
+      const docs = snapshot.docs.map((d) => d.data());
+      
+      const todayDocs = docs.filter((d: any) => {
+        const taskDate = d.createdAt?.toDate 
+            ? d.createdAt.toDate().toDateString() 
+            : new Date(d.date).toDateString();
+        return taskDate === today;
       });
-    }, (error) => {
-      console.error("Stats Listener Error:", error);
+
+      setStats({
+        total: todayDocs.length,
+        completed: todayDocs.filter((d) => d.status === "completed").length,
+        inProgress: todayDocs.filter((d) => d.status === "in-progress").length,
+        pending: todayDocs.filter((d) => d.status === "assigned").length,
+      });
     });
-    
-    return () => unsubscribe();
+
+    return () => unsub();
   }, []);
 
   const handleLogout = async () => {
-    try {
-      await signOut(auth);
-      router.replace("/");
-    } catch (error) {
-      console.error("Logout Error", error);
-    }
+    await signOut(auth);
+    router.replace("/(auth)/login");
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" />
-      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+      {/* Top Gradient Border */}
+      <View style={styles.gradientBorder} />
+
+      <ScrollView contentContainerStyle={styles.scrollContent}>
         
         {/* Header Section */}
         <View style={styles.header}>
           <View>
-            <Text style={styles.welcomeText}>System Administrator</Text>
-            <Text style={styles.subTitle}>AMPL Fleet Control</Text>
+            <View style={styles.statusRow}>
+              <View style={styles.pulseContainer}>
+                <View style={styles.pulseDot} />
+              </View>
+              <Text style={styles.statusText}>SYSTEM LIVE • ADMIN PORTAL</Text>
+            </View>
+            <Text style={styles.brandTitle}>
+              AMPL <Text style={{ color: "#2563EB" }}>Control</Text>
+            </Text>
           </View>
-          <TouchableOpacity onPress={handleLogout} style={styles.logoutCircle}>
-            <MaterialCommunityIcons name="power" size={24} color="#ef4444" />
+
+          <TouchableOpacity onPress={handleLogout} style={styles.logoutBtn}>
+            <Text style={styles.logoutText}>Logout</Text>
+            <View style={styles.logoutIconBox}>
+              <MaterialCommunityIcons name="logout" size={18} color="#64748B" />
+            </View>
           </TouchableOpacity>
         </View>
 
-        {/* Stats Grid */}
+        {/* STATS GRID */}
         <View style={styles.statsGrid}>
-          <StatCard 
-            title="Total Duties" 
-            value={stats.total} 
-            icon="clipboard-list-outline" 
-            color="#6366f1" 
+          <StatCard
+            title="Today's Total"
+            value={stats.total}
+            icon="check-circle-outline"
+            color="#6366F1"
+            onPress={() => router.push("/(admin)/duty-records?filter=all")}
           />
-          <StatCard 
-            title="Completed" 
-            value={stats.completed} 
-            icon="check-decagram-outline" 
-            color="#22c55e" 
+          <StatCard
+            title="Completed"
+            value={stats.completed}
+            icon="check-circle"
+            color="#10B981"
+            onPress={() => router.push("/(admin)/duty-records?filter=completed")}
           />
-          <StatCard 
-            title="In Progress" 
-            value={stats.inProgress} 
-            icon="map-clock-outline" 
-            color="#f59e0b" 
+          <StatCard
+            title="In Progress"
+            value={stats.map}
+            icon="map-outline"
+            color="#F59E0B"
+            onPress={() => router.push("/(admin)/duty-records?filter=in-progress")}
           />
-          <StatCard 
-            title="Pending" 
-            value={stats.pending} 
-            icon="alert-circle-outline" 
-            color="#64748b" 
+          <StatCard
+            title="Pending"
+            value={stats.pending}
+            icon="alert-circle-outline"
+            color="#64748B"
+            onPress={() => router.push("/(admin)/duty-records?filter=assigned")}
           />
         </View>
 
-        {/* Main Actions Section */}
-        <Text style={styles.sectionTitle}>Management Console</Text>
-        <View style={styles.actionContainer}>
-          
-          {/* New Live Tracking Shortcut */}
-          <TouchableOpacity 
-            style={[styles.mainActionBtn, { backgroundColor: '#0F172A' }]}
+        <View style={styles.dividerRow}>
+          <Text style={styles.sectionTitle}>Management Console</Text>
+          <View style={styles.line} />
+        </View>
+
+        {/* Action Buttons */}
+        <View style={styles.actionGrid}>
+          <ActionButton
+            title="Live Tracking"
+            subtitle="GPS tracking"
+            icon="map-marker-radius"
+            bgColor="#0F172A"
+            iconColor="#60A5FA"
             onPress={() => router.push("/(admin)/live-tracking")}
-          >
-            <MaterialCommunityIcons name="map-marker-radius" size={24} color="#fff" />
-            <Text style={styles.actionBtnText}>Live Fleet Tracking</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.mainActionBtn}
-            onPress={() => router.push("./assign-duty")}
-          >
-            <MaterialCommunityIcons name="plus-circle-outline" size={24} color="#fff" />
-            <Text style={styles.actionBtnText}>Assign New Duty</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-             style={[styles.mainActionBtn, styles.secondaryBtn]}
-             onPress={() => router.push("./manage-drivers")}
-          >
-            <MaterialCommunityIcons name="account-group-outline" size={24} color="#1e293b" />
-            <Text style={[styles.actionBtnText, { color: '#1e293b' }]}>Manage Drivers</Text>
-          </TouchableOpacity>
-
+          />
+          <ActionButton
+            title="Dispatch Duty"
+            subtitle="New tasks"
+            icon="plus-circle-outline"
+            bgColor="#2563EB"
+            iconColor="#FFFFFF"
+            onPress={() => router.push("/(admin)/assign-duty")}
+          />
+          <ActionButton
+            title="Manage Drivers"
+            subtitle="Personnel records"
+            icon="account-group-outline"
+            bgColor="#FFFFFF"
+            iconColor="#2563EB"
+            onPress={() => router.push("/(admin)/manage-drivers")}
+            bordered
+          />
+          <ActionButton
+            title="Daywise Report"
+            subtitle="Analytics & Exports"
+            icon="chart-bar"
+            bgColor="#FFFFFF"
+            iconColor="#6366F1"
+            onPress={() => router.push("/(admin)/daywise-report")}
+            bordered
+          />
         </View>
-
-        <View style={{ height: 40 }} />
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-// Reusable Stat Card Component
-const StatCard = ({ title, value, icon, color }: any) => (
-  <View style={styles.card}>
-    <View style={[styles.iconContainer, { backgroundColor: color + '15' }]}>
-      <MaterialCommunityIcons name={icon} size={24} color={color} />
-    </View>
-    <Text style={styles.cardValue}>{value}</Text>
-    <Text style={styles.cardTitle}>{title}</Text>
-  </View>
-);
+/* UI COMPONENTS */
+function StatCard({ title, value, icon, color, onPress }: any) {
+  return (
+    <TouchableOpacity onPress={onPress} style={styles.statCard}>
+      <View style={[styles.statIconBox, { backgroundColor: color + "15" }]}>
+        <MaterialCommunityIcons name={icon} size={22} color={color} />
+      </View>
+      <Text style={styles.statValue}>{value}</Text>
+      <Text style={styles.statLabel}>{title}</Text>
+    </TouchableOpacity>
+  );
+}
+
+function ActionButton({ title, subtitle, icon, bgColor, iconColor, onPress, bordered }: any) {
+  return (
+    <TouchableOpacity 
+      onPress={onPress} 
+      style={[
+        styles.actionCard, 
+        { backgroundColor: bgColor },
+        bordered && styles.borderedAction
+      ]}
+    >
+      <View style={[styles.actionIconBox, { backgroundColor: bordered ? "#F1F5F9" : "rgba(255,255,255,0.15)" }]}>
+        <MaterialCommunityIcons name={icon} size={24} color={bordered ? iconColor : iconColor} />
+      </View>
+      <Text style={[styles.actionTitle, { color: bordered ? "#0F172A" : "#FFFFFF" }]}>{title}</Text>
+      <Text style={[styles.actionSubtitle, { color: bordered ? "#64748B" : "rgba(255,255,255,0.6)" }]}>{subtitle}</Text>
+    </TouchableOpacity>
+  );
+}
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#f8fafc" },
-  container: { padding: 20 },
+  container: { flex: 1, backgroundColor: "#F8FAFC" },
+  gradientBorder: {
+    height: 6,
+    width: "100%",
+    backgroundColor: "#2563EB", // Simplified for mobile performance
+  },
+  scrollContent: { padding: 24 },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 30,
-    marginTop: 10
+    alignItems: "flex-end",
+    marginBottom: 40,
   },
-  welcomeText: { fontSize: 13, color: "#64748b", fontWeight: "700", textTransform: 'uppercase', letterSpacing: 0.5 },
-  subTitle: { fontSize: 26, fontWeight: "bold", color: "#0F172A" },
-  logoutCircle: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
-    backgroundColor: "#fee2e2",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  statsGrid: {
+  statusRow: { flexDirection: "row", alignItems: "center", marginBottom: 4 },
+  pulseContainer: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#22C55E", marginRight: 8 },
+  pulseDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#22C55E", opacity: 0.5 },
+  statusText: { fontSize: 10, fontWeight: "900", color: "#94A3B8", letterSpacing: 1.5 },
+  brandTitle: { fontSize: 32, fontWeight: "900", color: "#0F172A", letterSpacing: -0.5 },
+  logoutBtn: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
   },
-  card: {
-    backgroundColor: "#fff",
-    width: "48%",
+  logoutText: { fontSize: 13, fontWeight: "700", color: "#64748B", marginRight: 8 },
+  logoutIconBox: { width: 32, height: 32, borderRadius: 8, backgroundColor: "#F1F5F9", alignItems: "center", justifyContent: "center" },
+  statsGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", marginBottom: 40 },
+  statCard: {
+    width: "47%",
+    backgroundColor: "#FFFFFF",
     padding: 20,
-    borderRadius: 24,
-    marginBottom: 15,
-    elevation: 3,
+    borderRadius: 32,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: "#F1F5F9",
+    elevation: 2,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.05,
     shadowRadius: 10,
-    borderWidth: 1,
-    borderColor: '#f1f5f9'
   },
-  iconContainer: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 12,
-  },
-  cardValue: { fontSize: 24, fontWeight: "bold", color: "#1e293b" },
-  cardTitle: { fontSize: 12, color: "#64748b", fontWeight: "600", marginTop: 4 },
-  sectionTitle: { fontSize: 18, fontWeight: "bold", color: "#1e293b", marginTop: 20, marginBottom: 15 },
-  actionContainer: { gap: 14 },
-  mainActionBtn: {
-    backgroundColor: "#2563eb",
-    flexDirection: "row",
-    padding: 20,
-    borderRadius: 18,
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 12,
-    elevation: 2,
-  },
-  secondaryBtn: {
-    backgroundColor: '#fff', 
-    borderWidth: 1.5, 
-    borderColor: '#e2e8f0',
-    elevation: 0,
-  },
-  actionBtnText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
+  statIconBox: { width: 44, height: 44, borderRadius: 14, alignItems: "center", justifyContent: "center", marginBottom: 12 },
+  statValue: { fontSize: 28, fontWeight: "900", color: "#0F172A" },
+  statLabel: { fontSize: 9, fontWeight: "900", color: "#94A3B8", letterSpacing: 1, textTransform: "uppercase", marginTop: 4 },
+  dividerRow: { flexDirection: "row", alignItems: "center", marginBottom: 25 },
+  sectionTitle: { fontSize: 18, fontWeight: "900", color: "#1E293B", marginRight: 12 },
+  line: { flex: 1, height: 1, backgroundColor: "#E2E8F0" },
+  actionGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
+  actionCard: { width: "47%", padding: 24, borderRadius: 32, marginBottom: 16, elevation: 4, shadowColor: "#000", shadowOpacity: 0.1 },
+  borderedAction: { borderWidth: 1, borderColor: "#E2E8F0", elevation: 0, shadowOpacity: 0 },
+  actionIconBox: { width: 48, height: 48, borderRadius: 16, alignItems: "center", justifyContent: "center", marginBottom: 16 },
+  actionTitle: { fontSize: 16, fontWeight: "800" },
+  actionSubtitle: { fontSize: 11, fontWeight: "600", marginTop: 2 },
 });

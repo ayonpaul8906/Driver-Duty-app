@@ -8,7 +8,6 @@
     "scheme": "driverdutyapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
-
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.ampl.driverduty",
@@ -18,7 +17,6 @@
         "NSLocationAlwaysAndWhenInUseUsageDescription": "AMPL tracks your location during active duties."
       }
     },
-
     "android": {
       "package": "com.ampl.driverduty",
       "permissions": [
@@ -33,7 +31,6 @@
       },
       "edgeToEdgeEnabled": true
     },
-
     "plugins": [
       "expo-router",
       [
@@ -49,13 +46,12 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
-      ]
+      ],
+      "@react-native-community/datetimepicker"
     ],
-
     "experiments": {
       "typedRoutes": true
     },
-
     "extra": {
       "eas": {
         "projectId": "b6fdfab9-c254-47a2-858a-4ce93515ac27"
