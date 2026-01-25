@@ -58,7 +58,7 @@ export default function AdminDashboard() {
 
   const handleLogout = async () => {
     await signOut(auth);
-    router.replace("/(auth)/login");
+    router.replace("/");
   };
 
   return (

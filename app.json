@@ -23,7 +23,12 @@
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
         "FOREGROUND_SERVICE",
-        "FOREGROUND_SERVICE_LOCATION"
+        "FOREGROUND_SERVICE_LOCATION",
+        "WRITE_EXTERNAL_STORAGE", 
+        "READ_EXTERNAL_STORAGE",
+        "ACCESS_BACKGROUND_LOCATION",
+        "NOTIFICATIONS"
+
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -33,6 +38,7 @@
     },
     "plugins": [
       "expo-router",
+      "expo-notifications",
       [
         "expo-location",
         {
