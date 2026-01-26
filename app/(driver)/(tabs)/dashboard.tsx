@@ -1,9 +1,8 @@
+import React, { useEffect, useState, useRef } from "react";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import Constants from "expo-constants";
-import * as Device from "expo-device";
-import * as Location from "expo-location";
-import * as Notifications from "expo-notifications";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
+import * as Location from "expo-location";
 import { signOut } from "firebase/auth";
 import {
   collection,
@@ -17,23 +16,23 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Modal, Platform, ScrollView,
+  AppState,
+  Modal,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
+import * as Linking from "expo-linking";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { auth, db } from "../../../services/firebase";
-import {
-  startBackgroundTracking
-} from "../../../services/LocationTracker";
+import { startBackgroundTracking } from "../../../services/LocationTracker";
 
 /* ================= TYPES & HELPERS ================= */
 interface Task {
@@ -48,16 +47,6 @@ interface Task {
   fuelQuantity?: number;
   openingKm?: number;
 }
-
-Notifications.setNotificationHandler({
-  handleNotification: async () => {
-    return {
-      shouldShowAlert: true,
-      shouldPlaySound: true,
-      shouldSetBadge: false,
-    };
-  },
-});
 
 function isToday(task: Task) {
   const today = new Date().toDateString();
@@ -84,6 +73,7 @@ export default function DriverDashboard() {
   const [gpsStatus, setGpsStatus] = useState<
     "tracking" | "error" | "searching"
   >("searching");
+  const isInitializing = useRef(false);
 
   const [completion, setCompletion] = useState({
     closingKm: "",
@@ -91,97 +81,75 @@ export default function DriverDashboard() {
     amount: "",
   });
 
-  async function registerForPushNotificationsAsync() {
-    let token;
-
-    // 1. Setup Android Channel (High Importance)
-    if (Platform.OS === "android") {
-      await Notifications.setNotificationChannelAsync("default", {
-        name: "default",
-        importance: Notifications.AndroidImportance.MAX,
-        vibrationPattern: [0, 250, 250, 250],
-        lightColor: "#2563EB",
-      });
-    }
-
-    // 2. Request Permissions
-    if (Device.isDevice) {
-      const { status: existingStatus } =
-        await Notifications.getPermissionsAsync();
-      let finalStatus = existingStatus;
-      if (existingStatus !== "granted") {
-        const { status } = await Notifications.requestPermissionsAsync();
-        finalStatus = status;
-      }
-      if (finalStatus !== "granted") {
-        console.log("Permission for notifications denied!");
-        return;
-      }
-
-      // 3. Fetch Token using your Project ID
-      try {
-        // It's best to fetch it from Constants, but we use your UUID as a fallback
-        const projectId =
-          Constants?.expoConfig?.extra?.eas?.projectId ??
-          "b6fdfab9-c254-47a2-858a-4ce93515ac27";
-
-        token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
-        console.log("✅ Push Token Generated:", token);
-      } catch (e) {
-        console.log("❌ Error fetching Expo token:", e);
-      }
-    } else {
-      console.log("Must use physical device for Push Notifications");
-    }
-
-    // 4. Save to Firestore
-    if (token && auth.currentUser) {
-      const userRef = doc(db, "users", auth.currentUser.uid);
-      await updateDoc(userRef, { pushToken: token });
-    }
-
-    return token;
-  }
-
   /* ================= LIVE LOCATION TRACKING ================= */
 
-  useEffect(() => {
-    const initializeTracking = async () => {
-      const user = auth.currentUser;
-      if (!user) return;
+const initializeTracking = async () => {
+  if (isInitializing.current) return;
+  isInitializing.current = true;
 
-      try {
-        // 1. Request Permissions
-        const { status: fgStatus } =
-          await Location.requestForegroundPermissionsAsync();
-        if (fgStatus !== "granted") {
-          setGpsStatus("error");
-          return;
-        }
+  const user = auth.currentUser;
+  if (!user) {
+    isInitializing.current = false;
+    return;
+  }
 
-        // 2. Start the global background service
-        await startBackgroundTracking();
-        setGpsStatus("tracking");
+  try {
+    setGpsStatus("searching");
+    await AsyncStorage.setItem("driver_uid", user.uid);
 
-        // 3. Mark driver as online in Firestore immediately
-        const driverRef = doc(db, "drivers", user.uid);
-        await setDoc(
-          driverRef,
-          {
-            locationstatus: "online",
-            lastUpdated: serverTimestamp(),
-            driverId: user.uid,
-          },
-          { merge: true },
-        );
-      } catch (e) {
-        console.error("Tracking Init Error:", e);
-        setGpsStatus("error");
-      }
-    };
+    // Optional quick check
+    const fg = await Location.getForegroundPermissionsAsync();
+    const bg = await Location.getBackgroundPermissionsAsync();
+    if (fg.status !== "granted" || bg.status !== "granted") {
+      console.log("Permissions missing, requesting...");
+    }
 
-    initializeTracking();
-  }, []);
+    const result = await startBackgroundTracking();
+    setGpsStatus(result as any);
+
+    // ✅ use result instead of gpsStatus
+    if (result === "tracking") {
+      await setDoc(
+        doc(db, "drivers", user.uid),
+        {
+          locationstatus: "online",
+          lastUpdated: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+  } catch (e) {
+    console.error("Critical GPS Error:", e);
+    setGpsStatus("error");
+  } finally {
+    setTimeout(() => {
+      isInitializing.current = false;
+    }, 1500);
+  }
+};
+
+
+const initTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+
+useEffect(() => {
+  // Initial run
+  initTimeoutRef.current && clearTimeout(initTimeoutRef.current);
+  initTimeoutRef.current = setTimeout(initializeTracking, 1000);
+
+  const subscription = AppState.addEventListener("change", (nextState) => {
+    if (nextState === "active") {
+      initTimeoutRef.current && clearTimeout(initTimeoutRef.current);
+      initTimeoutRef.current = setTimeout(initializeTracking, 1500);
+    }
+  });
+
+  return () => {
+    if (initTimeoutRef.current) clearTimeout(initTimeoutRef.current);
+    subscription.remove();
+  };
+}, []);
+
 
   /* ================= DATA FETCHING ================= */
   useEffect(() => {
@@ -216,129 +184,120 @@ export default function DriverDashboard() {
     };
   }, []);
 
-  useEffect(() => {
-    registerForPushNotificationsAsync();
-
-    const responseListener =
-      Notifications.addNotificationResponseReceivedListener((response) => {
-        console.log(
-          "Notification Tapped:",
-          response.notification.request.content.data,
-        );
-      });
-
-    return () => {
-      // FIX: Call .remove() directly on the listener object
-      if (responseListener) {
-        responseListener.remove();
-      }
-    };
-  }, []);
-
   /* ================= ACTIONS ================= */
 
-const handleStartTrip = async () => {
-  const currentStart = Number(startingKm);
-  const uid = auth.currentUser?.uid;
+  const handleStartTrip = async () => {
+    const currentStart = Number(startingKm);
+    const uid = auth.currentUser?.uid;
 
-  if (!startingKm || isNaN(currentStart)) {
-    Alert.alert("Input Error", "Please enter a valid numeric value.");
-    return;
-  }
-  if (!selectedTask) return;
-  if (!uid) return;
+    if (!startingKm || isNaN(currentStart)) {
+      Alert.alert("Input Error", "Please enter a valid numeric value.");
+      return;
+    }
+    if (!selectedTask) return;
+    if (!uid) return;
 
-  try {
-    const driverRef = doc(db, "drivers", uid);
-    const driverSnap = await getDoc(driverRef);
-    const lastTripEnd = driverSnap.exists() ? (driverSnap.data().lastTripEndKm || 0) : 0;
+    try {
+      const driverRef = doc(db, "drivers", uid);
+      const driverSnap = await getDoc(driverRef);
+      const lastTripEnd = driverSnap.exists()
+        ? driverSnap.data().lastTripEndKm || 0
+        : 0;
 
-    // 🔥 ALERT 1: If Start KM < Last Journey's End KM
-    if (currentStart < lastTripEnd) {
+      // 🔥 ALERT 1: If Start KM < Last Journey's End KM
+      if (currentStart < lastTripEnd) {
+        Alert.alert(
+          "Validation Failed",
+          "You have entered less km than last journey", // Your specific message
+          [{ text: "Fix Input" }],
+        );
+        return;
+      }
+
+      // Proceed if valid
+      await updateDoc(doc(db, "tasks", selectedTask.id), {
+        status: "in-progress",
+        startedAt: serverTimestamp(),
+        openingKm: currentStart,
+      });
+
+      await setDoc(
+        driverRef,
+        {
+          activeStatus: "in-progress",
+          active: false,
+          locationstatus: "online",
+        },
+        { merge: true },
+      );
+
+      setShowStartModal(false);
+      setStartingKm("");
+      setSelectedTask(null);
+    } catch (e: any) {
+      Alert.alert("Sync Error", e.message);
+    }
+  };
+
+  const completeJourney = async () => {
+    if (!selectedTask) return;
+    const uid = auth.currentUser?.uid;
+    const close = Number(completion.closingKm);
+    const open = selectedTask.openingKm || 0;
+
+    if (isNaN(close)) {
+      Alert.alert("Input Error", "Please enter valid closing KM.");
+      return;
+    }
+
+    // 🔥 ALERT 2: If Closing KM < Starting (Initialize) KM
+    if (close <= open) {
       Alert.alert(
-        "Validation Failed", 
-        "You have entered less km than last journey", // Your specific message
-        [{ text: "Fix Input" }]
+        "Validation Failed",
+        "You have entered less than initialize km", // Your specific message
+        [{ text: "Fix Input" }],
       );
       return;
     }
 
-    // Proceed if valid
-    await updateDoc(doc(db, "tasks", selectedTask.id), {
-      status: "in-progress",
-      startedAt: serverTimestamp(),
-      openingKm: currentStart,
-    });
+    if (!uid) return;
 
-    await setDoc(driverRef, {
-      activeStatus: "in-progress",
-      active: false,
-      locationstatus: "online",
-    }, { merge: true });
+    try {
+      const driverRef = doc(db, "drivers", uid);
+      const taskRef = doc(db, "tasks", selectedTask.id);
+      const userRef = doc(db, "users", uid);
+      const kms = close - open;
 
-    setShowStartModal(false);
-    setStartingKm("");
-    setSelectedTask(null);
-  } catch (e: any) {
-    Alert.alert("Sync Error", e.message);
-  }
-};
+      await updateDoc(taskRef, {
+        status: "completed",
+        closingKm: close,
+        fuelQuantity: Number(completion.fuelQuantity) || 0,
+        fuelAmount: Number(completion.amount) || 0,
+        kilometers: kms,
+        completedAt: serverTimestamp(),
+      });
 
-const completeJourney = async () => {
-  if (!selectedTask) return;
-  const uid = auth.currentUser?.uid;
-  const close = Number(completion.closingKm);
-  const open = selectedTask.openingKm || 0;
+      await setDoc(
+        driverRef,
+        {
+          activeStatus: "active",
+          active: true,
+          lastTripEndKm: close,
+          totalKilometers: increment(kms),
+        },
+        { merge: true },
+      );
 
-  if (isNaN(close)) {
-    Alert.alert("Input Error", "Please enter valid closing KM.");
-    return;
-  }
+      await updateDoc(userRef, { totalKms: increment(kms) });
 
-  // 🔥 ALERT 2: If Closing KM < Starting (Initialize) KM
-  if (close <= open) {
-    Alert.alert(
-      "Validation Failed", 
-      "You have entered less than initialize km", // Your specific message
-      [{ text: "Fix Input" }]
-    );
-    return;
-  }
-
-  if (!uid) return;
-
-  try {
-    const driverRef = doc(db, "drivers", uid);
-    const taskRef = doc(db, "tasks", selectedTask.id);
-    const userRef = doc(db, "users", uid);
-    const kms = close - open;
-
-    await updateDoc(taskRef, {
-      status: "completed",
-      closingKm: close,
-      fuelQuantity: Number(completion.fuelQuantity) || 0,
-      fuelAmount: Number(completion.amount) || 0,
-      kilometers: kms,
-      completedAt: serverTimestamp(),
-    });
-
-    await setDoc(driverRef, {
-      activeStatus: "active",
-      active: true,
-      lastTripEndKm: close,
-      totalKilometers: increment(kms),
-    }, { merge: true });
-
-    await updateDoc(userRef, { totalKms: increment(kms) });
-
-    setShowModal(false);
-    setCompletion({ closingKm: "", fuelQuantity: "", amount: "" });
-    setSelectedTask(null);
-    Alert.alert("Success", "Journey completed successfully!");
-  } catch (e: any) {
-    Alert.alert("Sync Error", e.message);
-  }
-};
+      setShowModal(false);
+      setCompletion({ closingKm: "", fuelQuantity: "", amount: "" });
+      setSelectedTask(null);
+      Alert.alert("Success", "Journey completed successfully!");
+    } catch (e: any) {
+      Alert.alert("Sync Error", e.message);
+    }
+  };
 
   const handleLogout = async () => {
     const user = auth.currentUser;
@@ -349,6 +308,16 @@ const completeJourney = async () => {
     }
     await signOut(auth);
     router.replace("/");
+  };
+
+  const handleNavigate = (destination?: string) => {
+    if (!destination) {
+      Alert.alert("Error", "No destination address found.");
+      return;
+    }
+    // Deep links into the Google Maps app
+    const url = `http://maps.google.com/maps?daddr=${encodeURIComponent(destination)}`;
+    Linking.openURL(url);
   };
 
   const todayTasks = tasks.filter(
@@ -363,20 +332,32 @@ const completeJourney = async () => {
       <View style={styles.header}>
         <View>
           <View style={styles.gpsRow}>
-            <View
-              style={[
-                styles.pulse,
-                {
-                  backgroundColor:
-                    gpsStatus === "tracking" ? "#22C55E" : "#EF4444",
-                },
-              ]}
-            />
-            <Text style={styles.gpsText}>
-              {gpsStatus === "tracking"
-                ? "SYSTEM LIVE • TRACKING"
-                : "GPS INACTIVE"}
-            </Text>
+            <TouchableOpacity
+              onPress={initializeTracking}
+              style={styles.gpsRow}
+              disabled={gpsStatus === "tracking"} // Disable if already live
+            >
+              <View
+                style={[
+                  styles.pulse,
+                  {
+                    backgroundColor:
+                      gpsStatus === "tracking"
+                        ? "#22C55E"
+                        : gpsStatus === "searching"
+                          ? "#F59E0B"
+                          : "#EF4444",
+                  },
+                ]}
+              />
+              <Text style={styles.gpsText}>
+                {gpsStatus === "tracking"
+                  ? "SYSTEM LIVE • TRACKING"
+                  : gpsStatus === "searching"
+                    ? "INITIALIZING..."
+                    : "GPS INACTIVE • TAP TO FIX"}
+              </Text>
+            </TouchableOpacity>
           </View>
           <Text style={styles.brandText}>
             AMPL <Text style={{ color: "#2563EB" }}>Driver</Text>

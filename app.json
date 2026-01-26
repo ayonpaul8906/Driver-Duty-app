@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "Driver Duty Management",
+    "name": "DutySync",
     "slug": "driver-duty-app",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/logo.png",
     "scheme": "driverdutyapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -24,12 +24,21 @@
         "ACCESS_COARSE_LOCATION",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
-        "WRITE_EXTERNAL_STORAGE", 
+        "WRITE_EXTERNAL_STORAGE",
         "READ_EXTERNAL_STORAGE",
         "ACCESS_BACKGROUND_LOCATION",
-        "NOTIFICATIONS"
-
+        "POST_NOTIFICATIONS",
+        "WAKE_LOCK"
       ],
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIza..."
+        }
+      },
+      "foregroundServiceType": "location",
+      "manifestEntries": {
+        "android:foregroundServiceType": "location"
+      },
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundColor": "#E6F4FE"
@@ -42,7 +51,14 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow AMPL to use your location."
+          "locationAlwaysAndWhenInUsePermission": "AMPL needs your location always to track duty progress accurately.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true,
+          "foregroundService": {
+            "notificationTitle": "AMPL Tracking",
+            "notificationBody": "Location tracking is active.",
+            "notificationColor": "#2563EB"
+          }
         }
       ],
       [

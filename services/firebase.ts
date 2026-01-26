@@ -14,13 +14,18 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 
-// Fail-safe: Fallback to standard persistence if ReactNativePersistence is missing
-const persistence = (firebaseAuth as any).getReactNativePersistence 
-  ? (firebaseAuth as any).getReactNativePersistence(AsyncStorage) 
-  : (firebaseAuth as any).browserLocalPersistence;
+// // Fail-safe: Fallback to standard persistence if ReactNativePersistence is missing
+// const persistence = (firebaseAuth as any).getReactNativePersistence 
+//   ? (firebaseAuth as any).getReactNativePersistence(AsyncStorage) 
+//   : (firebaseAuth as any).browserLocalPersistence;
 
+// export const auth = firebaseAuth.initializeAuth(app, {
+//   persistence: persistence,
+// });
 export const auth = firebaseAuth.initializeAuth(app, {
-  persistence: persistence,
+  persistence: firebaseAuth.inMemoryPersistence,
 });
+
+
 
 export const db = getFirestore(app);

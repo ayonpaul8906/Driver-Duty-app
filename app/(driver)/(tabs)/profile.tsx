@@ -11,48 +11,52 @@ import {
   Image,
   KeyboardAvoidingView,
   Platform,
+  Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
-import { updatePassword, updateProfile, signOut } from "firebase/auth";
-import * as ImagePicker from "expo-image-picker";
+import { updatePassword, EmailAuthProvider, reauthenticateWithCredential, onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "../../../services/firebase";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
 export default function ProfessionalProfile() {
   const router = useRouter();
-  const user = auth.currentUser;
-  
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
-  const [showSecurity, setShowSecurity] = useState(false);
   
-  const [profile, setProfile] = useState({
-    name: "",
-    phone: "",
-    email: "",
-    photoURL: "",
-  });
-  
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
+  // UI States
+  const [editMode, setEditMode] = useState(false);
+  const [showPassModal, setShowPassModal] = useState(false);
+  const [hidePass, setHidePass] = useState(true);
+
+  // Data States
+  const [profile, setProfile] = useState({ name: "", phone: "", email: "" });
+  const [passwords, setPasswords] = useState({ old: "", new: "", confirm: "" });
 
   useEffect(() => {
-    fetchProfile();
+    // 🔥 FIX: Listen for Auth State to avoid the "Infinite Loading" bug
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        fetchProfile(user.uid, user.email || "");
+      } else {
+        setLoading(false);
+        router.replace("/"); // Redirect to login if no user
+      }
+    });
+
+    return unsubscribe;
   }, []);
 
-  const fetchProfile = async () => {
-    if (!user) return;
+  const fetchProfile = async (uid: string, email: string) => {
     try {
-      const userDoc = await getDoc(doc(db, "users", user.uid));
+      const userDoc = await getDoc(doc(db, "users", uid));
       if (userDoc.exists()) {
         const data = userDoc.data();
         setProfile({
-          name: data.name || "",
+          name: data.name || "Driver",
           phone: data.phone || "",
-          email: user.email || "",
-          photoURL: user.photoURL || "",
+          email: email,
         });
       }
     } catch (e) {
@@ -62,25 +66,9 @@ export default function ProfessionalProfile() {
     }
   };
 
-  const pickImage = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.5,
-    });
-
-    if (!result.canceled) {
-      setProfile({ ...profile, photoURL: result.assets[0].uri });
-    }
-  };
-
-  const handleUpdate = async () => {
+  const handleUpdateInfo = async () => {
+    const user = auth.currentUser;
     if (!user) return;
-    if (showSecurity && newPassword !== confirmPassword) {
-      Alert.alert("Error", "Passwords do not match.");
-      return;
-    }
 
     setUpdating(true);
     try {
@@ -88,175 +76,182 @@ export default function ProfessionalProfile() {
         name: profile.name,
         phone: profile.phone,
       });
-
-      await updateProfile(user, {
-        displayName: profile.name,
-        photoURL: profile.photoURL,
-      });
-
-      if (showSecurity && newPassword.length >= 6) {
-        await updatePassword(user, newPassword);
-        setShowSecurity(false);
-        setNewPassword("");
-        setConfirmPassword("");
-      }
-
-      Alert.alert("Profile Updated", "Your changes have been saved successfully.");
+      setEditMode(false);
+      Alert.alert("Success", "Profile information updated.");
     } catch (error: any) {
-      Alert.alert("Update Failed", error.message);
+      Alert.alert("Error", error.message);
     } finally {
       setUpdating(false);
     }
   };
 
+  const handlePasswordChange = async () => {
+    const user = auth.currentUser;
+    if (!user || !user.email) return;
+
+    if (passwords.new !== passwords.confirm) {
+      Alert.alert("Error", "New passwords do not match.");
+      return;
+    }
+
+    setUpdating(true);
+    try {
+      const credential = EmailAuthProvider.credential(user.email, passwords.old);
+      await reauthenticateWithCredential(user, credential);
+      await updatePassword(user, passwords.new);
+      
+      setShowPassModal(false);
+      setPasswords({ old: "", new: "", confirm: "" });
+      Alert.alert("Success", "Password updated successfully.");
+    } catch (error: any) {
+      Alert.alert("Security Error", "Current password incorrect or session expired.");
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+
   if (loading) {
     return (
       <View style={styles.centerBox}>
         <ActivityIndicator size="large" color="#2563EB" />
+        <Text style={{marginTop: 10, color: '#94A3B8'}}>Syncing Profile...</Text>
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
-      <View style={styles.topAccent} />
-      <SafeAreaView style={{ flex: 1 }}>
-        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
-          <ScrollView showsVerticalScrollIndicator={false}>
-            
-            {/* PROFILE HERO */}
-            <View style={styles.heroSection}>
-              <TouchableOpacity onPress={pickImage} style={styles.avatarWrapper}>
-                {profile.photoURL ? (
-                  <Image source={{ uri: profile.photoURL }} style={styles.avatarImage} />
-                ) : (
-                  <View style={styles.avatarPlaceholder}>
-                    <Text style={styles.avatarText}>{profile.name.charAt(0)}</Text>
-                  </View>
-                )}
-                <View style={styles.cameraBtn}>
-                  <MaterialCommunityIcons name="camera" size={16} color="#fff" />
-                </View>
-              </TouchableOpacity>
-              <Text style={[styles.userName, {color:"#0b0a0a"}]}>{profile.name}</Text>
-              <View style={styles.badgeRow}>
-                <View style={styles.verifiedBadge}>
-                  <MaterialCommunityIcons name="check-decagram" size={14} color="#0b0a0a" />
-                  <Text style={[styles.verifiedText, { color: "#0b0a0a" }]}>Verified Driver</Text>
-                </View>
-              </View>
+      {/* HEADER SECTION */}
+      <View style={styles.headerBackground}>
+        <SafeAreaView>
+          <View style={styles.headerContent}>
+            <View style={styles.avatarCircle}>
+              <Text style={styles.avatarInitial}>{profile.name.charAt(0)}</Text>
             </View>
+            <Text style={styles.headerNameText}>{profile.name}</Text>
+            <Text style={styles.headerEmailText}>{profile.email}</Text>
+          </View>
+        </SafeAreaView>
+      </View>
 
-            <View style={styles.contentBody}>
-              {/* ACCOUNT SETTINGS GROUP */}
-              <View style={styles.card}>
-                <Text style={styles.sectionTitle}>Account Information</Text>
-                
-                <ProfileRow 
-                  label="Display Name" 
-                  value={profile.name} 
-                  icon="account-outline"
-                  onChangeText={(t:string) => setProfile({...profile, name: t})} 
-                />
-                
-                <ProfileRow 
-                  label="Mobile Number" 
-                  value={profile.phone} 
-                  icon="phone-outline"
-                  keyboardType="phone-pad"
-                  onChangeText={(t:string) => setProfile({...profile, phone: t})} 
-                />
-
-                <View style={styles.readOnlyRow}>
-                  <MaterialCommunityIcons name="email-outline" size={20} color="#94A3B8" />
-                  <View style={{marginLeft: 15}}>
-                    <Text style={styles.readOnlyLabel}>Email Address</Text>
-                    <Text style={styles.readOnlyValue}>{profile.email}</Text>
-                  </View>
-                </View>
-              </View>
-
-              {/* SECURITY SECTION */}
-              <View style={styles.card}>
-                <TouchableOpacity 
-                  style={styles.expandHeader} 
-                  onPress={() => setShowSecurity(!showSecurity)}
-                >
-                  <View style={styles.row}>
-                    <MaterialCommunityIcons name="shield-lock-outline" size={20} color="#2563EB" />
-                    <Text style={styles.cardTitle}>Security & Password</Text>
-                  </View>
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        {/* GENERAL INFO CARD */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>General Info</Text>
+            <TouchableOpacity onPress={() => editMode ? handleUpdateInfo() : setEditMode(true)}>
+              {updating && editMode ? (
+                <ActivityIndicator size="small" color="#2563EB" />
+              ) : (
+                <View style={styles.editActionRow}>
+                  <Text style={[styles.editText, editMode && {color: '#10B981'}]}>
+                    {editMode ? "SAVE" : "EDIT"}
+                  </Text>
                   <MaterialCommunityIcons 
-                    name={showSecurity ? "chevron-up" : "chevron-down"} 
-                    size={24} 
-                    color="#94A3B8" 
+                    name={editMode ? "check-circle" : "pencil-circle"} 
+                    size={20} 
+                    color={editMode ? "#10B981" : "#2563EB"} 
                   />
-                </TouchableOpacity>
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
 
-                {showSecurity && (
-                  <View style={styles.expandBody}>
-                    <ProfileRow 
-                      label="New Password" 
-                      value={newPassword} 
-                      icon="lock-outline"
-                      secureTextEntry
-                      onChangeText={setNewPassword} 
-                    />
-                    <ProfileRow 
-                      label="Confirm Password" 
-                      value={confirmPassword} 
-                      icon="lock-check-outline"
-                      secureTextEntry
-                      onChangeText={setConfirmPassword} 
-                    />
-                  </View>
-                )}
-              </View>
+          <EditableRow 
+            label="Full Name" 
+            value={profile.name} 
+            icon="account-outline"
+            editable={editMode}
+            onChangeText={(t:string) => setProfile({...profile, name: t})}
+          />
+          <EditableRow 
+            label="Phone Number" 
+            value={profile.phone} 
+            icon="phone-outline"
+            editable={editMode}
+            keyboardType="phone-pad"
+            onChangeText={(t:string) => setProfile({...profile, phone: t})}
+          />
+        </View>
 
-              {/* SAVE BUTTON */}
-              <TouchableOpacity 
-                style={[styles.primaryBtn, updating && { opacity: 0.7 }]} 
-                onPress={handleUpdate}
-                disabled={updating}
-              >
-                {updating ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <>
-                    <MaterialCommunityIcons name="content-save-outline" size={20} color="#fff" />
-                    <Text style={styles.primaryBtnText}>Update Profile</Text>
-                  </>
-                )}
-              </TouchableOpacity>
+        {/* SECURITY CARD */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Security</Text>
+          <TouchableOpacity style={styles.passwordBtn} onPress={() => setShowPassModal(true)}>
+            <View style={styles.row}>
+              <MaterialCommunityIcons name="lock-reset" size={22} color="#2563EB" />
+              <Text style={styles.passwordBtnText}>Change Password</Text>
+            </View>
+            <MaterialCommunityIcons name="chevron-right" size={22} color="#CBD5E1" />
+          </TouchableOpacity>
+        </View>
 
-              {/* LOGOUT */}
-              <TouchableOpacity style={styles.logoutBtn} onPress={() => signOut(auth)}>
-                <MaterialCommunityIcons name="logout-variant" size={20} color="#EF4444" />
-                <Text style={styles.logoutText}>Sign Out from Console</Text>
+      </ScrollView>
+
+      {/* PASSWORD MODAL */}
+      <Modal visible={showPassModal} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBody}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Update Password</Text>
+              <TouchableOpacity onPress={() => setShowPassModal(false)}>
+                <MaterialCommunityIcons name="close" size={24} color="#64748B" />
               </TouchableOpacity>
             </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
+
+            <View style={styles.modalInputGroup}>
+              <Text style={styles.modalInputLabel}>Current Password</Text>
+              <View style={styles.passwordInputWrapper}>
+                <TextInput 
+                  style={styles.modalInput} 
+                  secureTextEntry={hidePass} 
+                  value={passwords.old}
+                  onChangeText={(t) => setPasswords({...passwords, old: t})}
+                />
+                <TouchableOpacity onPress={() => setHidePass(!hidePass)}>
+                  <MaterialCommunityIcons name={hidePass ? "eye-outline" : "eye-off-outline"} size={20} color="#94A3B8" />
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.modalInputLabel}>New Password</Text>
+              <TextInput 
+                style={styles.modalInputSingle} 
+                secureTextEntry={hidePass} 
+                value={passwords.new}
+                onChangeText={(t) => setPasswords({...passwords, new: t})}
+              />
+
+              <Text style={styles.modalInputLabel}>Confirm New Password</Text>
+              <TextInput 
+                style={styles.modalInputSingle} 
+                secureTextEntry={hidePass} 
+                value={passwords.confirm}
+                onChangeText={(t) => setPasswords({...passwords, confirm: t})}
+              />
+            </View>
+
+            <TouchableOpacity style={styles.modalSubmitBtn} onPress={handlePasswordChange}>
+              {updating ? <ActivityIndicator color="#fff" /> : <Text style={styles.modalSubmitText}>Change Password</Text>}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
-/* --- REUSABLE COMPONENTS --- */
-function ProfileRow({ label, value, icon, ...props }: any) {
+function EditableRow({ label, value, icon, editable, ...props }: any) {
   return (
     <View style={styles.rowContainer}>
-      <View style={styles.iconBox}>
-        <MaterialCommunityIcons name={icon} size={20} color="#2563EB" />
-      </View>
+      <View style={styles.iconBox}><MaterialCommunityIcons name={icon} size={20} color="#2563EB" /></View>
       <View style={styles.inputStack}>
         <Text style={styles.rowLabel}>{label}</Text>
-        <TextInput 
-          style={styles.rowInput} 
-          value={value} 
-          placeholderTextColor="#CBD5E1"
-          {...props} 
-        />
+        {editable ? (
+          <TextInput style={styles.rowInputActive} value={value} {...props} autoFocus />
+        ) : (
+          <Text style={styles.rowValueText}>{value || "Not set"}</Text>
+        )}
       </View>
     </View>
   );
@@ -264,35 +259,39 @@ function ProfileRow({ label, value, icon, ...props }: any) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8FAFC" },
-  topAccent: { position: "absolute", top: 0, width: "100%", height: 180, backgroundColor: "#2563EB" },
   centerBox: { flex: 1, justifyContent: "center", alignItems: "center" },
-  heroSection: { alignItems: "center", paddingVertical: 40 },
-  avatarWrapper: { position: "relative" },
-  avatarImage: { width: 110, height: 110, borderRadius: 55, borderWidth: 4, borderColor: "#fff" },
-  avatarPlaceholder: { width: 110, height: 110, borderRadius: 55, backgroundColor: "#0F172A", alignItems: "center", justifyContent: "center", borderWidth: 4, borderColor: "#fff" },
-  avatarText: { fontSize: 40, fontWeight: "900", color: "#fff" },
-  cameraBtn: { position: "absolute", bottom: 5, right: 5, backgroundColor: "#2563EB", width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", borderWidth: 3, borderColor: "#fff" },
-  userName: { fontSize: 24, fontWeight: "900", color: "#fff", marginTop: 15 },
-  badgeRow: { marginTop: 8 },
-  verifiedBadge: { flexDirection: "row", alignItems: "center", backgroundColor: "rgba(255,255,255,0.2)", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
-  verifiedText: { color: "#fff", fontSize: 10, fontWeight: "900", marginLeft: 5, textTransform: "uppercase" },
-  contentBody: { paddingHorizontal: 20, marginTop: -20 },
-  card: { backgroundColor: "#fff", borderRadius: 24, padding: 20, marginBottom: 15, elevation: 4, shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 15 },
-  sectionTitle: { fontSize: 11, fontWeight: "900", color: "#94A3B8", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 20 },
-  rowContainer: { flexDirection: "row", alignItems: "center", marginBottom: 20 },
+  headerBackground: { backgroundColor: "#2563EB", height: 220, borderBottomLeftRadius: 40, borderBottomRightRadius: 40, elevation: 10 },
+  headerContent: { alignItems: "center", marginTop: 20 },
+  avatarCircle: { width: 90, height: 90, borderRadius: 45, backgroundColor: "#1E293B", alignItems: "center", justifyContent: "center", borderWidth: 4, borderColor: "#fff", shadowColor: "#000", shadowOpacity: 0.2, shadowRadius: 10 },
+  avatarInitial: { fontSize: 36, fontWeight: "bold", color: "#fff" },
+  headerNameText: { fontSize: 24, fontWeight: "900", color: "#fff", marginTop: 12 },
+  headerEmailText: { fontSize: 14, color: "rgba(255,255,255,0.8)", fontWeight: "600" },
+  scrollContent: { padding: 20 },
+  card: { backgroundColor: "#fff", borderRadius: 24, padding: 20, marginBottom: 20, elevation: 4, shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 15 },
+  cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20 },
+  cardTitle: { fontSize: 12, fontWeight: "900", color: "#94A3B8", textTransform: "uppercase", letterSpacing: 1 },
+  editActionRow: { flexDirection: "row", alignItems: "center", gap: 5 },
+  editText: { fontSize: 12, fontWeight: "900", color: "#2563EB" },
+  rowContainer: { flexDirection: "row", alignItems: "center", marginBottom: 15 },
   iconBox: { width: 40, height: 40, borderRadius: 12, backgroundColor: "#EFF6FF", alignItems: "center", justifyContent: "center" },
   inputStack: { flex: 1, marginLeft: 15 },
   rowLabel: { fontSize: 10, fontWeight: "800", color: "#94A3B8", textTransform: "uppercase" },
-  rowInput: { fontSize: 16, fontWeight: "700", color: "#1E293B", paddingVertical: 4 },
-  readOnlyRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, opacity: 0.6 },
-  readOnlyLabel: { fontSize: 10, fontWeight: "800", color: "#94A3B8", textTransform: "uppercase" },
-  readOnlyValue: { fontSize: 14, fontWeight: "700", color: "#1E293B" },
-  expandHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  row: { flexDirection: "row", alignItems: "center" },
-  cardTitle: { fontSize: 15, fontWeight: "900", color: "#0F172A", marginLeft: 15 },
-  expandBody: { marginTop: 25 },
-  primaryBtn: { backgroundColor: "#2563EB", height: 60, borderRadius: 20, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, elevation: 8, shadowColor: "#2563EB", shadowOpacity: 0.3, marginTop: 10 },
-  primaryBtnText: { color: "#fff", fontSize: 16, fontWeight: "900", letterSpacing: 1 },
-  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", padding: 20, gap: 10 },
-  logoutText: { color: "#EF4444", fontSize: 14, fontWeight: "900" },
+  rowValueText: { fontSize: 16, fontWeight: "700", color: "#1E293B" },
+  rowInputActive: { fontSize: 16, fontWeight: "700", color: "#2563EB", borderBottomWidth: 1, borderBottomColor: "#DBEAFE", paddingVertical: 2 },
+  passwordBtn: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: "#F8FAFC", padding: 16, borderRadius: 16 },
+  row: { flexDirection: "row", alignItems: "center", gap: 15 },
+  passwordBtnText: { fontSize: 15, fontWeight: "700", color: "#1E293B" },
+  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, padding: 20 },
+  logoutBtnText: { fontSize: 15, fontWeight: "800", color: "#EF4444" },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(15,23,42,0.6)", justifyContent: "flex-end" },
+  modalBody: { backgroundColor: "#fff", borderTopLeftRadius: 32, borderTopRightRadius: 32, padding: 30 },
+  modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 25 },
+  modalTitle: { fontSize: 20, fontWeight: "900", color: "#0F172A" },
+  modalInputGroup: { gap: 15 },
+  modalInputLabel: { fontSize: 11, fontWeight: "900", color: "#94A3B8", textTransform: "uppercase" },
+  passwordInputWrapper: { flexDirection: "row", alignItems: "center", backgroundColor: "#F8FAFC", borderRadius: 12, paddingRight: 15, borderBottomWidth: 1, borderBottomColor: "#F1F5F9" },
+  modalInput: { flex: 1, padding: 15, fontSize: 16, fontWeight: "700", color: "#1E293B" },
+  modalInputSingle: { backgroundColor: "#F8FAFC", borderRadius: 12, padding: 15, fontSize: 16, fontWeight: "700", color: "#1E293B", borderBottomWidth: 1, borderBottomColor: "#F1F5F9" },
+  modalSubmitBtn: { backgroundColor: "#2563EB", height: 60, borderRadius: 20, alignItems: "center", justifyContent: "center", marginTop: 25 },
+  modalSubmitText: { color: "#fff", fontSize: 16, fontWeight: "900" },
 });

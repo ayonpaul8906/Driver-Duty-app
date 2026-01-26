@@ -1,8 +1,8 @@
 // context/AuthContext.tsx
-import { createContext, useEffect, useState, ReactNode } from "react";
 import { onAuthStateChanged, User } from "firebase/auth";
-import { auth, db } from "../services/firebase";
 import { doc, getDoc } from "firebase/firestore";
+import { createContext, ReactNode, useEffect, useState } from "react";
+import { auth, db } from "../services/firebase";
 
 type Role = "admin" | "driver" | null;
 
@@ -26,7 +26,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setLoading(true); // Always start loading when auth state triggers
-      
+
       if (u) {
         try {
           const snap = await getDoc(doc(db, "users", u.uid));
@@ -45,7 +45,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(null);
         setRole(null);
       }
-      
+
       setLoading(false); // Only stop loading after the database check is done
     });
 

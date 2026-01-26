@@ -1,93 +1,104 @@
-import * as Location from 'expo-location';
-import * as TaskManager from 'expo-task-manager';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { db, auth } from './firebase';
+// app/services/LocationTracker.ts
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Location from "expo-location";
+import * as TaskManager from "expo-task-manager";
+import { doc, serverTimestamp, setDoc } from "firebase/firestore";
+import { Alert } from "react-native";
+import { db } from "./firebase";
 
-const LOCATION_TASK_NAME = 'background-location-task';
+const LOCATION_TASK_NAME = "background-location-task";
 
-// 1. Define the background task
+// Background task – writes GPS to Firestore
 TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }: any) => {
   if (error) {
-    console.error("Background Location Error:", error);
+    console.error("Background task error:", error);
     return;
   }
-  
-  if (data) {
-    const { locations } = data;
-    const location = locations[0];
 
-    // FIX: Firebase auth might not be ready in background thread
-    // We try to get the current user, but we use setDoc with merge 
-    // to ensure we don't crash if the document doesn't exist yet.
-    const user = auth.currentUser;
+  if (!data) return;
 
-    if (location && user?.uid) {
-      try {
-        const driverRef = doc(db, "drivers", user.uid);
-        
-        // Use setDoc with { merge: true } instead of updateDoc.
-        // updateDoc fails if the document doesn't exist, setDoc creates it.
-        await setDoc(driverRef, {
+  const { locations } = data;
+  const location = locations[0];
+
+  try {
+    const savedUid = await AsyncStorage.getItem("driver_uid");
+    if (location && savedUid) {
+      await setDoc(
+        doc(db, "drivers", savedUid),
+        {
           latitude: location.coords.latitude,
           longitude: location.coords.longitude,
           lastUpdated: serverTimestamp(),
           locationstatus: "online",
-          driverId: user.uid
-        }, { merge: true });
-
-        console.log("📍 Location Synced to Firebase:", location.coords.latitude);
-      } catch (e) {
-        console.log("❌ Firebase Background Update Failed", e);
-      }
-    } else {
-      console.log("⚠️ Tracking active but User UID not found in background context.");
+        },
+        { merge: true },
+      );
+      // console.log("BG location saved:", savedUid, location.coords);
     }
+  } catch (e) {
+    console.error("BG Sync Failed:", e);
   }
 });
 
-// 2. Export functions
-export const startBackgroundTracking = async () => {
-  // Foreground permissions
-  const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
-  if (fgStatus !== 'granted') {
-    console.log("Foreground permission denied");
-    return;
-  }
+// Start background tracking
+// Start background tracking
+export const startBackgroundTracking = async (): Promise<
+  "tracking" | "error"
+> => {
+  try {
+    // 1. Always REQUEST foreground permission
+    const fgResult = await Location.requestForegroundPermissionsAsync();
+    console.log("Foreground permission:", fgResult.status);
+    if (fgResult.status !== "granted") {
+      Alert.alert(
+        "Location required",
+        "Please allow location to use DutySync.",
+      );
+      return "error";
+    }
 
-  // Background permissions (Crucial for "Always On")
-  const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
-  if (bgStatus !== 'granted') {
-    console.log("Background permission denied");
-    return;
-  }
+    // 2. Always REQUEST background permission
+    // On Android 11+ this will usually open system Settings.
+    const bgResult = await Location.requestBackgroundPermissionsAsync();
+    console.log("Background permission:", bgResult.status);
+    if (bgResult.status !== "granted") {
+      Alert.alert(
+        "Enable background location",
+        "In Android Settings, set DutySync location to 'Allow all the time' for live tracking.",
+      );
+      return "error";
+    }
 
-  const isStarted = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
-  if (isStarted) {
-    console.log("Tracking already running");
-    return;
-  }
+    // 3. Avoid double start
+    const isStarted =
+      await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
+    if (!isStarted) {
+      await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
+        accuracy: Location.Accuracy.High,
+        timeInterval: 30000, // 30s
+        distanceInterval: 10, // meters
+        foregroundService: {
+          notificationTitle: "AMPL Active Tracking",
+          notificationBody: "Reporting location for active duty...",
+          notificationColor: "#2563EB",
+        },
+        deferredUpdatesInterval: 30000,
+        deferredUpdatesDistance: 10,
+        showsBackgroundLocationIndicator: true, // iOS
+      });
+    }
 
-  await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
-    accuracy: Location.Accuracy.High, // Changed to High for better precision
-    timeInterval: 10000, 
-    distanceInterval: 5, // Reduced to 5 meters for smoother live tracking
-    deferredUpdatesInterval: 1000,
-    // Required for Android to stay alive
-    foregroundService: {
-      notificationTitle: "AMPL Live Tracking",
-      notificationBody: "Reporting live location to dispatch console...",
-      notificationColor: "#2563EB",
-    },
-    pausesLocationUpdatesAutomatically: false, // iOS: Prevents system from stopping updates
-  });
-  
-  console.log("🚀 Background Tracking Started");
+    return "tracking";
+  } catch (error) {
+    console.error("Tracking Engine Error:", error);
+    return "error";
+  }
 };
 
 export const stopBackgroundTracking = async () => {
-  const hasStarted = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
-  if (hasStarted) {
+  const registered =
+    await TaskManager.isTaskRegisteredAsync(LOCATION_TASK_NAME);
+  if (registered) {
     await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
-    console.log("🛑 Background Tracking Stopped");
   }
 };
