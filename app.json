@@ -40,7 +40,7 @@
         "android:foregroundServiceType": "location"
       },
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "foregroundImage": "./assets/images/logo.png",
         "backgroundColor": "#E6F4FE"
       },
       "edgeToEdgeEnabled": true
@@ -64,7 +64,7 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/logo.png",
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }

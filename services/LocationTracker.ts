@@ -6,7 +6,7 @@ import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { Alert } from "react-native";
 import { db } from "./firebase";
 
-const LOCATION_TASK_NAME = "background-location-task";
+export const LOCATION_TASK_NAME = "background-location-task";
 
 // Background task – writes GPS to Firestore
 TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }: any) => {
@@ -41,14 +41,10 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }: any) => {
 });
 
 // Start background tracking
-// Start background tracking
-export const startBackgroundTracking = async (): Promise<
-  "tracking" | "error"
-> => {
+export const startBackgroundTracking = async (): Promise<"tracking" | "error"> => {
   try {
-    // 1. Always REQUEST foreground permission
+    // 1. Foreground permission
     const fgResult = await Location.requestForegroundPermissionsAsync();
-    console.log("Foreground permission:", fgResult.status);
     if (fgResult.status !== "granted") {
       Alert.alert(
         "Location required",
@@ -57,10 +53,8 @@ export const startBackgroundTracking = async (): Promise<
       return "error";
     }
 
-    // 2. Always REQUEST background permission
-    // On Android 11+ this will usually open system Settings.
+    // 2. Background permission
     const bgResult = await Location.requestBackgroundPermissionsAsync();
-    console.log("Background permission:", bgResult.status);
     if (bgResult.status !== "granted") {
       Alert.alert(
         "Enable background location",
@@ -70,8 +64,9 @@ export const startBackgroundTracking = async (): Promise<
     }
 
     // 3. Avoid double start
-    const isStarted =
-      await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
+    const isStarted = await Location.hasStartedLocationUpdatesAsync(
+      LOCATION_TASK_NAME,
+    );
     if (!isStarted) {
       await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
         accuracy: Location.Accuracy.High,
@@ -84,7 +79,7 @@ export const startBackgroundTracking = async (): Promise<
         },
         deferredUpdatesInterval: 30000,
         deferredUpdatesDistance: 10,
-        showsBackgroundLocationIndicator: true, // iOS
+        showsBackgroundLocationIndicator: true, // iOS pill
       });
     }
 
@@ -96,8 +91,9 @@ export const startBackgroundTracking = async (): Promise<
 };
 
 export const stopBackgroundTracking = async () => {
-  const registered =
-    await TaskManager.isTaskRegisteredAsync(LOCATION_TASK_NAME);
+  const registered = await TaskManager.isTaskRegisteredAsync(
+    LOCATION_TASK_NAME,
+  );
   if (registered) {
     await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
   }

@@ -34,36 +34,57 @@ interface Task {
 export default function DutyHistory() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
-  const [groupedTasks, setGroupedTasks] = useState<{ [key: string]: Task[] }>(
-    {},
-  );
+  const [groupedTasks, setGroupedTasks] = useState<{ [key: string]: Task[] }>({});
 
   useEffect(() => {
     const user = auth.currentUser;
-    if (!user) return;
+    if (!user) {
+      setLoading(false); // 🔥 Prevent infinite loading if no user is found
+      return;
+    }
 
-    // Query completed tasks for this driver
-    const q = query(
-      collection(db, "tasks"),
-      where("driverId", "==", user.uid),
-      where("status", "==", "completed"),
-      orderBy("createdAt", "desc"),
-    );
+    try {
+      // Query completed tasks for this driver
+      const q = query(
+        collection(db, "tasks"),
+        where("driverId", "==", user.uid),
+        where("status", "==", "completed"),
+        orderBy("createdAt", "desc")
+      );
 
-    const unsub = onSnapshot(q, (snapshot) => {
-      const tasks = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      })) as Task[];
+      const unsub = onSnapshot(q, (snapshot) => {
+        // 🔥 Fix: If snapshot is empty, stop loading and clear tasks
+        if (snapshot.empty) {
+          setGroupedTasks({});
+          setLoading(false);
+          return;
+        }
 
-      groupTasks(tasks);
+        const tasks = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        })) as Task[];
+
+        groupTasks(tasks);
+        setLoading(false);
+      }, (error) => {
+        console.error("History Listener Error:", error);
+        setLoading(false); // 🔥 Stop loading even if there is an error
+      });
+
+      return () => unsub();
+    } catch (err) {
+      console.error("Query Error:", err);
       setLoading(false);
-    });
-
-    return () => unsub();
+    }
   }, []);
 
   const groupTasks = (tasks: Task[]) => {
+    if (!tasks || tasks.length === 0) {
+      setGroupedTasks({});
+      return;
+    }
+
     const groups: { [key: string]: Task[] } = {};
 
     tasks.forEach((task) => {
@@ -71,6 +92,7 @@ export default function DutyHistory() {
       const taskDate = task.createdAt?.toDate
         ? task.createdAt.toDate()
         : new Date(task.date || "");
+        
       const today = new Date();
       const yesterday = new Date();
       yesterday.setDate(today.getDate() - 1);
@@ -114,11 +136,13 @@ export default function DutyHistory() {
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#2563EB" />
+          <Text style={styles.loadingText}>Fetching history...</Text>
         </View>
       ) : Object.keys(groupedTasks).length === 0 ? (
         <View style={styles.emptyContainer}>
           <MaterialCommunityIcons name="history" size={80} color="#E2E8F0" />
           <Text style={styles.emptyText}>No history found</Text>
+          <Text style={styles.emptySubText}>Completed tasks will appear here</Text>
         </View>
       ) : (
         <ScrollView
@@ -156,7 +180,7 @@ export default function DutyHistory() {
                   </View>
 
                   <View style={styles.logRight}>
-                    <Text style={styles.kmText}>{task.kilometers} KM</Text>
+                    <Text style={styles.kmText}>{task.kilometers || 0} KM</Text>
                     <Text style={styles.timeText}>{task.tourTime}</Text>
                   </View>
                 </View>
@@ -245,6 +269,7 @@ const styles = StyleSheet.create({
   kmText: { fontSize: 15, fontWeight: "900", color: "#0F172A" },
   timeText: { fontSize: 10, fontWeight: "700", color: "#94A3B8", marginTop: 2 },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
+  loadingText: { marginTop: 10, color: '#94A3B8', fontWeight: '700', fontSize: 12 },
   emptyContainer: {
     flex: 1,
     justifyContent: "center",
@@ -254,8 +279,14 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 14,
     fontWeight: "800",
-    color: "#CBD5E1",
+    color: "#64748B",
     marginTop: 10,
     textTransform: "uppercase",
   },
+  emptySubText: {
+    fontSize: 12,
+    color: "#94A3B8",
+    fontWeight: "600",
+    marginTop: 4,
+  }
 });

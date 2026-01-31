@@ -1,8 +1,7 @@
-import React, { useEffect, useState, useRef } from "react";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useRouter } from "expo-router";
 import * as Location from "expo-location";
+import { useRouter } from "expo-router";
 import { signOut } from "firebase/auth";
 import {
   collection,
@@ -16,142 +15,147 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   AppState,
   Modal,
   ScrollView,
-  StatusBar,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
-import * as Linking from "expo-linking";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { auth, db } from "../../../services/firebase";
-import { startBackgroundTracking } from "../../../services/LocationTracker";
+import {
+  startBackgroundTracking,
+  stopBackgroundTracking,
+} from "../../../services/LocationTracker";
 
-/* ================= TYPES & HELPERS ================= */
+type TaskStatus = "assigned" | "in-progress" | "completed";
+
 interface Task {
   id: string;
   tourLocation?: string;
   pickup?: string;
   drop?: string;
-  status: "assigned" | "in-progress" | "completed";
+  status: TaskStatus;
   passenger?: { name?: string };
-  date?: string;
-  createdAt?: any;
   fuelQuantity?: number;
   openingKm?: number;
+  completedAt?: any;
+  createdAt?: any;
 }
 
-function isToday(task: Task) {
-  const today = new Date().toDateString();
-  if (task.createdAt?.toDate)
-    return task.createdAt.toDate().toDateString() === today;
-  if (task.date) return new Date(task.date).toDateString() === today;
-  return false;
-}
+type GpsState = "tracking" | "error" | "searching";
 
 export default function DriverDashboard() {
   const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const [gpsStatus, setGpsStatus] = useState<GpsState>("searching");
+  const isInitializing = useRef(false);
+  const initTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [stats, setStats] = useState({
     totalKms: 0,
-    completed: 0,
-    pending: 0,
+    totalTrips: 0,
+    activeDuties: 0,
     totalFuel: 0,
   });
+
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [showModal, setShowModal] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
   const [startingKm, setStartingKm] = useState("");
-  const [gpsStatus, setGpsStatus] = useState<
-    "tracking" | "error" | "searching"
-  >("searching");
-  const isInitializing = useRef(false);
 
+  const [showCompleteModal, setShowCompleteModal] = useState(false);
   const [completion, setCompletion] = useState({
     closingKm: "",
     fuelQuantity: "",
-    amount: "",
   });
+  const [submitting, setSubmitting] = useState(false);
 
-  /* ================= LIVE LOCATION TRACKING ================= */
+  /* ============ GPS INITIALIZATION (no always-on foreground watch) ============ */
 
-const initializeTracking = async () => {
-  if (isInitializing.current) return;
-  isInitializing.current = true;
+  const initializeTracking = async () => {
+    if (isInitializing.current) return;
+    isInitializing.current = true;
 
-  const user = auth.currentUser;
-  if (!user) {
-    isInitializing.current = false;
-    return;
-  }
-
-  try {
-    setGpsStatus("searching");
-    await AsyncStorage.setItem("driver_uid", user.uid);
-
-    // Optional quick check
-    const fg = await Location.getForegroundPermissionsAsync();
-    const bg = await Location.getBackgroundPermissionsAsync();
-    if (fg.status !== "granted" || bg.status !== "granted") {
-      console.log("Permissions missing, requesting...");
-    }
-
-    const result = await startBackgroundTracking();
-    setGpsStatus(result as any);
-
-    // ✅ use result instead of gpsStatus
-    if (result === "tracking") {
-      await setDoc(
-        doc(db, "drivers", user.uid),
-        {
-          locationstatus: "online",
-          lastUpdated: serverTimestamp(),
-        },
-        { merge: true }
-      );
-    }
-  } catch (e) {
-    console.error("Critical GPS Error:", e);
-    setGpsStatus("error");
-  } finally {
-    setTimeout(() => {
+    const user = auth.currentUser;
+    if (!user) {
       isInitializing.current = false;
-    }, 1500);
-  }
-};
-
-
-const initTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-
-useEffect(() => {
-  // Initial run
-  initTimeoutRef.current && clearTimeout(initTimeoutRef.current);
-  initTimeoutRef.current = setTimeout(initializeTracking, 1000);
-
-  const subscription = AppState.addEventListener("change", (nextState) => {
-    if (nextState === "active") {
-      initTimeoutRef.current && clearTimeout(initTimeoutRef.current);
-      initTimeoutRef.current = setTimeout(initializeTracking, 1500);
+      return;
     }
-  });
 
-  return () => {
-    if (initTimeoutRef.current) clearTimeout(initTimeoutRef.current);
-    subscription.remove();
+    try {
+      setGpsStatus("searching");
+      await AsyncStorage.setItem("driver_uid", user.uid);
+
+      // Ensure both foreground & background permissions
+      let fg = await Location.getForegroundPermissionsAsync();
+      let bg = await Location.getBackgroundPermissionsAsync();
+
+      if (fg.status !== "granted") {
+        const fgReq = await Location.requestForegroundPermissionsAsync();
+        fg = fgReq;
+      }
+      if (bg.status !== "granted") {
+        const bgReq = await Location.requestBackgroundPermissionsAsync();
+        bg = bgReq;
+      }
+
+      if (fg.status !== "granted" || bg.status !== "granted") {
+        setGpsStatus("error");
+        isInitializing.current = false;
+        return;
+      }
+
+      // Start your background task (TaskManager + startLocationUpdatesAsync inside LocationTracker)
+      const result = await startBackgroundTracking(); // "tracking" | "error"
+      setGpsStatus(result as GpsState);
+
+      if (result === "tracking") {
+        await setDoc(
+          doc(db, "drivers", user.uid),
+          {
+            locationstatus: "online",
+            lastUpdated: serverTimestamp(),
+          },
+          { merge: true },
+        );
+      }
+    } catch (e) {
+      setGpsStatus("error");
+    } finally {
+      setTimeout(() => {
+        isInitializing.current = false;
+      }, 1500);
+    }
   };
-}, []);
 
+  // Run once on mount and when app comes back to foreground
+  useEffect(() => {
+    if (initTimeoutRef.current) clearTimeout(initTimeoutRef.current);
+    initTimeoutRef.current = setTimeout(initializeTracking, 1000);
 
-  /* ================= DATA FETCHING ================= */
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        if (initTimeoutRef.current) clearTimeout(initTimeoutRef.current);
+        initTimeoutRef.current = setTimeout(initializeTracking, 1500);
+      }
+    });
+
+    return () => {
+      if (initTimeoutRef.current) clearTimeout(initTimeoutRef.current);
+      sub.remove();
+    };
+  }, []);
+
+  /* ============ FIRESTORE DATA: STATS & TASKS ============ */
   useEffect(() => {
     const user = auth.currentUser;
     if (!user) return;
@@ -159,21 +163,38 @@ useEffect(() => {
     const userRef = doc(db, "users", user.uid);
     const unsubUser = onSnapshot(userRef, (snap) => {
       if (snap.exists()) {
-        setStats((s) => ({ ...s, totalKms: snap.data().totalKms || 0 }));
+        setStats((s) => ({
+          ...s,
+          totalKms: snap.data().totalKms || 0,
+        }));
       }
     });
 
     const q = query(collection(db, "tasks"), where("driverId", "==", user.uid));
     const unsubTasks = onSnapshot(q, (snap) => {
-      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Task[];
-      const completed = list.filter((t) => t.status === "completed").length;
-      const pending = list.filter((t) => t.status !== "completed").length;
+      const list = snap.docs.map(
+        (d) =>
+          ({
+            id: d.id,
+            ...(d.data() as Omit<Task, "id">),
+          }) as Task,
+      );
+
+      const totalTrips = list.length;
+      const activeDuties = list.filter(
+        (t) => t.status === "assigned" || t.status === "in-progress",
+      ).length;
       const totalFuel = list.reduce(
         (acc, curr) => acc + (Number(curr.fuelQuantity) || 0),
         0,
       );
 
-      setStats((s) => ({ ...s, completed, pending, totalFuel }));
+      setStats((s) => ({
+        ...s,
+        totalTrips,
+        activeDuties,
+        totalFuel,
+      }));
       setTasks(list);
       setLoading(false);
     });
@@ -184,18 +205,25 @@ useEffect(() => {
     };
   }, []);
 
-  /* ================= ACTIONS ================= */
+  /* ============ ACTIONS: START & COMPLETE JOURNEY ============ */
 
   const handleStartTrip = async () => {
-    const currentStart = Number(startingKm);
-    const uid = auth.currentUser?.uid;
-
-    if (!startingKm || isNaN(currentStart)) {
-      Alert.alert("Input Error", "Please enter a valid numeric value.");
+    // Require GPS live before starting
+    if (gpsStatus !== "tracking") {
+      Alert.alert(
+        "GPS Required",
+        "Please enable GPS and wait until the system is live before starting a trip.",
+      );
       return;
     }
-    if (!selectedTask) return;
-    if (!uid) return;
+
+    const currentStart = Number(startingKm);
+    const uid = auth.currentUser?.uid;
+    if (!startingKm || isNaN(currentStart)) {
+      Alert.alert("Validation", "Enter valid starting KM.");
+      return;
+    }
+    if (!selectedTask || !uid) return;
 
     try {
       const driverRef = doc(db, "drivers", uid);
@@ -204,79 +232,86 @@ useEffect(() => {
         ? driverSnap.data().lastTripEndKm || 0
         : 0;
 
-      // 🔥 ALERT 1: If Start KM < Last Journey's End KM
       if (currentStart < lastTripEnd) {
         Alert.alert(
           "Validation Failed",
-          "You have entered less km than last journey", // Your specific message
-          [{ text: "Fix Input" }],
+          `You entered less KM than last journey (${lastTripEnd} KM).`,
         );
         return;
       }
 
-      // Proceed if valid
+      // 1. Update task -> in-progress
       await updateDoc(doc(db, "tasks", selectedTask.id), {
         status: "in-progress",
         startedAt: serverTimestamp(),
         openingKm: currentStart,
       });
 
-      await setDoc(
-        driverRef,
-        {
-          activeStatus: "in-progress",
-          active: false,
-          locationstatus: "online",
-        },
-        { merge: true },
-      );
+      // 2. Update driver status
+      await updateDoc(driverRef, {
+        locationstatus: "online",
+        activeStatus: "in-progress",
+        active: false,
+      });
+
+      // 3. Persist UID for background task
+      await AsyncStorage.setItem("driver_uid", uid);
+
+      // 4. Ensure background tracking is running
+      const status = await startBackgroundTracking();
+      if (status === "error") {
+        Alert.alert(
+          "Tracking Error",
+          "Could not start background tracking. Please check permissions.",
+        );
+      }
 
       setShowStartModal(false);
       setStartingKm("");
       setSelectedTask(null);
     } catch (e: any) {
-      Alert.alert("Sync Error", e.message);
+      Alert.alert("Error", e.message || "Error starting trip.");
     }
   };
 
-  const completeJourney = async () => {
+  const handleCompleteJourney = async () => {
     if (!selectedTask) return;
     const uid = auth.currentUser?.uid;
+    if (!uid) return;
+
     const close = Number(completion.closingKm);
     const open = selectedTask.openingKm || 0;
 
-    if (isNaN(close)) {
-      Alert.alert("Input Error", "Please enter valid closing KM.");
+    if (!completion.closingKm || isNaN(close)) {
+      Alert.alert("Validation", "Please enter valid closing KM.");
       return;
     }
-
-    // 🔥 ALERT 2: If Closing KM < Starting (Initialize) KM
     if (close <= open) {
       Alert.alert(
         "Validation Failed",
-        "You have entered less than initialize km", // Your specific message
-        [{ text: "Fix Input" }],
+        "You have entered less than initialized KM.",
       );
       return;
     }
 
-    if (!uid) return;
-
     try {
+      setSubmitting(true);
+
       const driverRef = doc(db, "drivers", uid);
       const taskRef = doc(db, "tasks", selectedTask.id);
       const userRef = doc(db, "users", uid);
       const kms = close - open;
 
+      // 1. Complete task
       await updateDoc(taskRef, {
         status: "completed",
         closingKm: close,
         fuelQuantity: Number(completion.fuelQuantity) || 0,
-        fuelAmount: Number(completion.amount) || 0,
         kilometers: kms,
         completedAt: serverTimestamp(),
       });
 
+      // 2. Reset driver status
       await setDoc(
         driverRef,
         {
@@ -284,302 +319,334 @@ useEffect(() => {
           active: true,
           lastTripEndKm: close,
           totalKilometers: increment(kms),
+          locationstatus: "online",
         },
         { merge: true },
       );
 
+      // 3. Update user total kms
       await updateDoc(userRef, { totalKms: increment(kms) });
 
-      setShowModal(false);
-      setCompletion({ closingKm: "", fuelQuantity: "", amount: "" });
+      // 4. Stop background tracking
+      await stopBackgroundTracking();
+      await AsyncStorage.removeItem("driver_uid");
+
+      setShowCompleteModal(false);
+      setCompletion({ closingKm: "", fuelQuantity: "" });
       setSelectedTask(null);
-      Alert.alert("Success", "Journey completed successfully!");
+      Alert.alert("Success", "Journey completed successfully.");
     } catch (e: any) {
-      Alert.alert("Sync Error", e.message);
+      Alert.alert("Sync Error", e.message || "Failed to sync journey.");
+    } finally {
+      setSubmitting(false);
     }
   };
 
   const handleLogout = async () => {
     const user = auth.currentUser;
-    if (user) {
-      await updateDoc(doc(db, "drivers", user.uid), {
-        locationstatus: "offline",
-      });
+    try {
+      await stopBackgroundTracking();
+      await AsyncStorage.removeItem("driver_uid");
+
+      if (user) {
+        await updateDoc(doc(db, "drivers", user.uid), {
+          locationstatus: "offline",
+        });
+      }
+      await signOut(auth);
+      router.replace("/login");
+    } catch (e: any) {
+      Alert.alert("Logout Error", e.message || "Failed to logout.");
     }
-    await signOut(auth);
-    router.replace("/");
   };
 
-  const handleNavigate = (destination?: string) => {
-    if (!destination) {
-      Alert.alert("Error", "No destination address found.");
-      return;
-    }
-    // Deep links into the Google Maps app
-    const url = `http://maps.google.com/maps?daddr=${encodeURIComponent(destination)}`;
-    Linking.openURL(url);
-  };
+  const activeTasks = tasks.filter((t) => t.status !== "completed");
+  const recentCompletedTasks = tasks
+    .filter((t) => t.status === "completed")
+    .sort((a, b) => {
+      const aTime = a.completedAt?.toDate
+        ? a.completedAt.toDate().getTime()
+        : a.createdAt?.toDate
+        ? a.createdAt.toDate().getTime()
+        : 0;
+      const bTime = b.completedAt?.toDate
+        ? b.completedAt.toDate().getTime()
+        : b.createdAt?.toDate
+        ? b.createdAt.toDate().getTime()
+        : 0;
+      return bTime - aTime;
+    })
+    .slice(0, 4);
 
-  const todayTasks = tasks.filter(
-    (t) => isToday(t) && t.status !== "completed",
-  );
-
+  /* ============ RENDER ============ */
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" />
-
       {/* HEADER */}
-      <View style={styles.header}>
+      <View style={styles.headerBar}>
         <View>
           <View style={styles.gpsRow}>
             <TouchableOpacity
               onPress={initializeTracking}
               style={styles.gpsRow}
-              disabled={gpsStatus === "tracking"} // Disable if already live
+              disabled={gpsStatus === "tracking"}
             >
               <View
                 style={[
-                  styles.pulse,
+                  styles.gpsDot,
                   {
                     backgroundColor:
                       gpsStatus === "tracking"
                         ? "#22C55E"
                         : gpsStatus === "searching"
-                          ? "#F59E0B"
-                          : "#EF4444",
+                        ? "#F59E0B"
+                        : "#EF4444",
                   },
                 ]}
               />
-              <Text style={styles.gpsText}>
+              <Text
+                style={[
+                  styles.gpsText,
+                  gpsStatus === "tracking"
+                    ? { color: "#94A3B8" }
+                    : gpsStatus === "searching"
+                    ? { color: "#F97316" }
+                    : { color: "#FCA5A5" },
+                ]}
+              >
                 {gpsStatus === "tracking"
-                  ? "SYSTEM LIVE • TRACKING"
+                  ? "System Live • Tracking"
                   : gpsStatus === "searching"
-                    ? "INITIALIZING..."
-                    : "GPS INACTIVE • TAP TO FIX"}
+                  ? "Initializing..."
+                  : "GPS Inactive • Tap to Fix"}
               </Text>
             </TouchableOpacity>
           </View>
-          <Text style={styles.brandText}>
+          <Text style={styles.brandTitle}>
             AMPL <Text style={{ color: "#2563EB" }}>Driver</Text>
           </Text>
         </View>
         <TouchableOpacity onPress={handleLogout} style={styles.logoutBtn}>
           <Text style={styles.logoutText}>Logout</Text>
-          <MaterialCommunityIcons name="logout" size={18} color="#64748B" />
+          <MaterialCommunityIcons
+            name="logout-variant"
+            size={18}
+            color="#DC2626"
+          />
         </TouchableOpacity>
       </View>
 
       <ScrollView
-        contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 20 }}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
       >
-        {/* STATS GRID */}
+        {/* STATS */}
         <View style={styles.statsGrid}>
           <StatCard
-            label="Total KM"
-            value={stats.totalKms}
             icon="speedometer"
-            color="#6366F1"
+            label="Total KM"
+            value={stats.totalKms.toLocaleString()}
+            color="#4F46E5"
           />
           <StatCard
-            label="Finished"
-            value={stats.completed}
             icon="check-circle"
-            color="#10B981"
+            label="Total Trips"
+            value={stats.totalTrips}
+            color="#059669"
+            onPress={() => router.push("/(driver)/duties/all" as any)}
           />
           <StatCard
-            label="Upcoming"
-            value={stats.pending}
             icon="clock-outline"
-            color="#F59E0B"
+            label="Active Duties"
+            value={stats.activeDuties}
+            color="#D97706"
+            onPress={() => router.push("/(driver)/duties/active" as any)}
           />
           <StatCard
+            icon="gas-station"
             label="Fuel (L)"
             value={stats.totalFuel.toFixed(1)}
-            icon="gas-station"
             color="#2563EB"
           />
         </View>
 
-        <Text style={styles.sectionTitle}>TODAY'S Tasks</Text>
-
-        {loading ? (
-          <ActivityIndicator color="#2563EB" style={{ marginTop: 50 }} />
-        ) : todayTasks.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <Text style={styles.emptyText}>No active tasks for today.</Text>
-          </View>
-        ) : (
-          todayTasks.map((task) => (
-            <View key={task.id} style={styles.taskCard}>
-              <View style={styles.taskInner}>
-                <View style={styles.taskHeader}>
-                  <View style={styles.passengerRow}>
-                    <View style={styles.pIcon}>
-                      <MaterialCommunityIcons
-                        name="account"
-                        size={24}
-                        color="#2563EB"
-                      />
+        {/* MAIN GRID */}
+        <View style={styles.mainGrid}>
+          {/* Active Duties */}
+          <View style={styles.activeColumn}>
+            {loading ? (
+              <View style={styles.loadingBox}>
+                <ActivityIndicator size="large" color="#2563EB" />
+              </View>
+            ) : activeTasks.length === 0 ? (
+              <View style={styles.emptyBox}>
+                <Text style={styles.emptyText}>No active assignments.</Text>
+              </View>
+            ) : (
+              activeTasks.map((task) => (
+                <View key={task.id} style={styles.taskCard}>
+                  <View style={styles.taskBody}>
+                    <View style={styles.taskTopRow}>
+                      <View style={styles.taskAvatar}>
+                        <MaterialCommunityIcons
+                          name="account"
+                          size={24}
+                          color="#2563EB"
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.taskLabel}>Passenger</Text>
+                        <Text style={styles.taskPassenger}>
+                          {task.passenger?.name || "Corporate Guest"}
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.statusPill,
+                          task.status === "in-progress"
+                            ? styles.statusInProgress
+                            : styles.statusAssigned,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.statusPillText,
+                            task.status === "in-progress"
+                              ? { color: "#B45309" }
+                              : { color: "#1D4ED8" },
+                          ]}
+                        >
+                          {task.status}
+                        </Text>
+                      </View>
                     </View>
-                    <View>
-                      <Text style={styles.labelSmall}>PASSENGER</Text>
-                      <Text style={styles.pName}>
-                        {task.passenger?.name || "Corporate Guest"}
+
+                    <View style={styles.routeBox}>
+                      <View style={styles.routeIconBox}>
+                        <MaterialCommunityIcons
+                          name="map-marker"
+                          size={20}
+                          color="#2563EB"
+                        />
+                      </View>
+                      <Text style={styles.routeText}>
+                        {task.tourLocation ||
+                          `${task.pickup || ""} → ${task.drop || ""}`}
                       </Text>
                     </View>
                   </View>
-                  <View
-                    style={[
-                      styles.statusBadge,
-                      {
-                        backgroundColor:
-                          task.status === "in-progress" ? "#FEF3C7" : "#DBEAFE",
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.statusText,
-                        {
-                          color:
-                            task.status === "in-progress"
-                              ? "#B45309"
-                              : "#1E40AF",
-                        },
-                      ]}
-                    >
-                      {task.status.toUpperCase()}
-                    </Text>
+
+                  <View style={styles.taskFooter}>
+                    {task.status === "assigned" ? (
+                      <TouchableOpacity
+                        onPress={() => {
+                          setSelectedTask(task);
+                          setShowStartModal(true);
+                        }}
+                        style={[styles.footerBtn, styles.startBtn]}
+                      >
+                        <MaterialCommunityIcons
+                          name="play-circle"
+                          size={20}
+                          color="#FFFFFF"
+                        />
+                        <Text style={styles.footerBtnText}>Start Trip</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <TouchableOpacity
+                        onPress={() => {
+                          setSelectedTask(task);
+                          setShowCompleteModal(true);
+                        }}
+                        style={[styles.footerBtn, styles.completeBtn]}
+                      >
+                        <MaterialCommunityIcons
+                          name="flag-checkered"
+                          size={20}
+                          color="#FFFFFF"
+                        />
+                        <Text style={styles.footerBtnText}>
+                          Complete Duty
+                        </Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 </View>
-
-                <View style={styles.locationBox}>
-                  <MaterialCommunityIcons
-                    name="map-marker"
-                    size={20}
-                    color="#2563EB"
-                  />
-                  <Text style={styles.locText}>
-                    {task.tourLocation || `${task.pickup} → ${task.drop}`}
-                  </Text>
-                </View>
-              </View>
-
-              <TouchableOpacity
-                style={[
-                  styles.actionBtn,
-                  {
-                    backgroundColor:
-                      task.status === "assigned" ? "#0F172A" : "#10B981",
-                  },
-                ]}
-                onPress={() => {
-                  setSelectedTask(task);
-                  task.status === "assigned"
-                    ? setShowStartModal(true)
-                    : setShowModal(true);
-                }}
-              >
-                <MaterialCommunityIcons
-                  name={task.status === "assigned" ? "play" : "flag"}
-                  size={20}
-                  color="#fff"
-                />
-                <Text style={styles.actionBtnText}>
-                  {task.status === "assigned" ? "START TRIP" : "COMPLETE DUTY"}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          ))
-        )}
+              ))
+            )}
+          </View>
+        </View>
       </ScrollView>
 
       {/* START MODAL */}
-      <Modal visible={showStartModal} transparent animationType="fade">
+      <Modal
+        visible={showStartModal}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setShowStartModal(false)}
+      >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalBody}>
+          <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Initialize Trip</Text>
-            <View style={styles.inputContainer}>
-              <MaterialCommunityIcons
-                name="speedometer"
-                size={20}
-                color="#CBD5E1"
-                style={styles.inputIcon}
-              />
-              <TextInput
-                placeholder="Start KM"
-                style={styles.input}
-                keyboardType="numeric"
+            <View style={{ marginVertical: 20 }}>
+              <LogInput
+                icon="speedometer"
+                label="Start KM"
                 value={startingKm}
-                onChangeText={setStartingKm}
+                onChange={setStartingKm}
               />
             </View>
             <TouchableOpacity
-              style={styles.modalSubmit}
               onPress={handleStartTrip}
+              style={[styles.modalBtn, { backgroundColor: "#2563EB" }]}
             >
-              <Text style={styles.modalSubmitText}>BEGIN JOURNEY</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => setShowStartModal(false)}
-              style={styles.cancelBtn}
-            >
-              <Text style={styles.cancelText}>Cancel</Text>
+              <Text style={styles.modalBtnText}>Begin Journey</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
-      {/* COMPLETION MODAL */}
-      <Modal visible={showModal} transparent animationType="fade">
+      {/* COMPLETE MODAL */}
+      <Modal
+        visible={showCompleteModal}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setShowCompleteModal(false)}
+      >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalBody}>
+          <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Complete Duty</Text>
-            <View style={styles.inputContainer}>
-              <MaterialCommunityIcons
-                name="speedometer"
-                size={20}
-                color="#CBD5E1"
-                style={styles.inputIcon}
-              />
-              <TextInput
-                placeholder="Closing KM"
-                style={styles.input}
-                keyboardType="numeric"
+            <View style={{ marginVertical: 20 }}>
+              <LogInput
+                icon="speedometer"
+                label="Closing KM"
                 value={completion.closingKm}
-                onChangeText={(v) =>
+                onChange={(v: string) =>
                   setCompletion({ ...completion, closingKm: v })
                 }
               />
-            </View>
-            <View style={styles.inputContainer}>
-              <MaterialCommunityIcons
-                name="gas-station"
-                size={20}
-                color="#CBD5E1"
-                style={styles.inputIcon}
-              />
-              <TextInput
-                placeholder="Fuel (Liters)"
-                style={styles.input}
-                keyboardType="numeric"
+              <View style={{ height: 12 }} />
+              <LogInput
+                icon="gas-station"
+                label="Fuel (Liters)"
                 value={completion.fuelQuantity}
-                onChangeText={(v) =>
+                onChange={(v: string) =>
                   setCompletion({ ...completion, fuelQuantity: v })
                 }
               />
             </View>
             <TouchableOpacity
-              style={[styles.modalSubmit, { backgroundColor: "#10B981" }]}
-              onPress={completeJourney}
+              onPress={handleCompleteJourney}
+              disabled={submitting}
+              style={[
+                styles.modalBtn,
+                { backgroundColor: "#059669", opacity: submitting ? 0.7 : 1 },
+              ]}
             >
-              <Text style={styles.modalSubmitText}>SUBMIT DUTY</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => setShowModal(false)}
-              style={styles.cancelBtn}
-            >
-              <Text style={styles.cancelText}>Cancel</Text>
+              {submitting ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Text style={styles.modalBtnText}>Submit Duty</Text>
+              )}
             </TouchableOpacity>
           </View>
         </View>
@@ -588,191 +655,371 @@ useEffect(() => {
   );
 }
 
-function StatCard({ label, value, icon, color }: any) {
+/* SMALL COMPONENTS */
+function StatCard({
+  icon,
+  label,
+  value,
+  color,
+  onPress,
+}: {
+  icon: string;
+  label: string;
+  value: string | number;
+  color: string;
+  onPress?: () => void;
+}) {
   return (
-    <View style={styles.statCard}>
-      <View style={[styles.statIconBox, { backgroundColor: color + "15" }]}>
-        <MaterialCommunityIcons name={icon} size={20} color={color} />
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={onPress ? 0.8 : 1}
+      style={styles.statCard}
+    >
+      <View style={[styles.statIcon, { backgroundColor: `${color}20` }]}>
+        <MaterialCommunityIcons name={icon as any} size={20} color={color} />
       </View>
       <Text style={styles.statValue}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+function LogInput({
+  icon,
+  label,
+  value,
+  onChange,
+}: {
+  icon: string;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <View style={styles.logInputWrapper}>
+      <MaterialCommunityIcons
+        name={icon as any}
+        size={20}
+        color="#94A3B8"
+        style={{ marginRight: 10 }}
+      />
+      <TextInput
+        placeholder={label}
+        keyboardType="numeric"
+        value={value}
+        onChangeText={onChange}
+        style={styles.logInput}
+      />
     </View>
   );
 }
 
+/* STYLES */
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8FAFC" },
-  header: {
-    paddingHorizontal: 25,
-    paddingVertical: 20,
+  headerBar: {
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E2E8F0",
+    backgroundColor: "#FFFFFF",
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.8)",
-    borderBottomWidth: 1,
-    borderColor: "#F1F5F9",
   },
-  gpsRow: { flexDirection: "row", alignItems: "center", marginBottom: 2 },
-  pulse: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
+  gpsRow: { flexDirection: "row", alignItems: "center", marginBottom: 4 },
+  gpsDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 6,
+  },
   gpsText: {
     fontSize: 10,
     fontWeight: "900",
-    color: "#94A3B8",
-    letterSpacing: 1,
+    letterSpacing: 2,
+    textTransform: "uppercase",
   },
-  brandText: { fontSize: 24, fontWeight: "900", color: "#0F172A" },
+  brandTitle: {
+    fontSize: 22,
+    fontWeight: "900",
+    color: "#0F172A",
+  },
   logoutBtn: {
     flexDirection: "row",
     alignItems: "center",
-    padding: 10,
-    backgroundColor: "#fff",
-    borderRadius: 15,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: "#FEF2F2",
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: "#FECACA",
   },
-  logoutText: { fontWeight: "700", color: "#64748B", marginRight: 8 },
+  logoutText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#B91C1C",
+    marginRight: 6,
+  },
+  scrollContent: { padding: 20, paddingBottom: 40 },
   statsGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    justifyContent: "space-between",
-    marginBottom: 30,
+    gap: 10,
+    marginBottom: 24,
   },
   statCard: {
-    width: "48%",
-    backgroundColor: "#fff",
-    padding: 20,
-    borderRadius: 24,
-    marginBottom: 15,
+    flexBasis: "48%",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 14,
     borderWidth: 1,
-    borderColor: "#F1F5F9",
+    borderColor: "#E2E8F0",
   },
-  statIconBox: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+  statIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 12,
+    marginBottom: 6,
   },
-  statValue: { fontSize: 22, fontWeight: "900", color: "#0F172A" },
+  statValue: {
+    fontSize: 20,
+    fontWeight: "900",
+    color: "#0F172A",
+  },
   statLabel: {
     fontSize: 10,
     fontWeight: "900",
     color: "#94A3B8",
-    letterSpacing: 1,
+    letterSpacing: 1.5,
+    textTransform: "uppercase",
     marginTop: 2,
   },
-  sectionTitle: {
-    fontSize: 11,
-    fontWeight: "900",
-    color: "#94A3B8",
-    letterSpacing: 2,
-    marginBottom: 15,
-    marginLeft: 5,
+  mainGrid: { flexDirection: "row", gap: 16 },
+  activeColumn: { flex: 2 },
+  logsColumn: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 24,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    alignSelf: "flex-start",
   },
-  emptyCard: {
-    padding: 40,
-    borderRadius: 30,
+  loadingBox: {
+    height: 200,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  emptyBox: {
+    padding: 24,
+    borderRadius: 24,
     borderWidth: 1,
     borderStyle: "dashed",
-    borderColor: "#CBD5E1",
-    alignItems: "center",
+    borderColor: "#CBD5F5",
+    backgroundColor: "#FFFFFF",
   },
-  emptyText: { color: "#94A3B8", fontWeight: "700" },
-  taskCard: {
-    backgroundColor: "#fff",
-    borderRadius: 30,
-    borderWidth: 1,
-    borderColor: "#F1F5F9",
-    overflow: "hidden",
-    marginBottom: 20,
-  },
-  taskInner: { padding: 25 },
-  taskHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    marginBottom: 20,
-  },
-  passengerRow: { flexDirection: "row", alignItems: "center" },
-  pIcon: {
-    width: 48,
-    height: 48,
-    backgroundColor: "#EFF6FF",
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 15,
-  },
-  labelSmall: { fontSize: 9, fontWeight: "900", color: "#94A3B8" },
-  pName: { fontSize: 18, fontWeight: "900", color: "#0F172A" },
-  statusBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10 },
-  statusText: { fontSize: 9, fontWeight: "900" },
-  locationBox: {
-    backgroundColor: "#F8FAFC",
-    padding: 15,
-    borderRadius: 20,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  locText: {
-    flex: 1,
-    marginLeft: 10,
+  emptyText: {
+    textAlign: "center",
     fontWeight: "700",
-    color: "#475569",
-    fontSize: 14,
+    color: "#9CA3AF",
   },
-  actionBtn: {
-    paddingVertical: 20,
+  taskCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    marginBottom: 14,
+    overflow: "hidden",
+  },
+  taskBody: { padding: 16 },
+  taskTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  taskAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 16,
+    backgroundColor: "#EFF6FF",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+  taskLabel: {
+    fontSize: 10,
+    fontWeight: "900",
+    color: "#94A3B8",
+    textTransform: "uppercase",
+  },
+  taskPassenger: {
+    fontSize: 16,
+    fontWeight: "900",
+    color: "#0F172A",
+  },
+  statusPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  statusInProgress: { backgroundColor: "#FEF3C7" },
+  statusAssigned: { backgroundColor: "#DBEAFE" },
+  statusPillText: {
+    fontSize: 10,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  routeBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#F8FAFC",
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  routeIconBox: {
+    width: 32,
+    height: 32,
+    borderRadius: 999,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+  routeText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#4B5563",
+  },
+  taskFooter: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: "#F9FAFB",
+    borderTopWidth: 1,
+    borderTopColor: "#E5E7EB",
+  },
+  footerBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    paddingVertical: 12,
+    borderRadius: 18,
+    gap: 6,
   },
-  actionBtnText: {
-    color: "#fff",
+  startBtn: { backgroundColor: "#0F172A" },
+  completeBtn: { backgroundColor: "#059669" },
+  footerBtnText: {
+    color: "#FFFFFF",
+    fontSize: 11,
     fontWeight: "900",
+    textTransform: "uppercase",
+    letterSpacing: 1.6,
+  },
+  logsHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 12,
+    gap: 6,
+  },
+  logsHeaderText: {
+    fontSize: 10,
+    fontWeight: "900",
+    color: "#94A3B8",
+    textTransform: "uppercase",
+    letterSpacing: 1.6,
+  },
+  noLogsText: {
     fontSize: 12,
-    letterSpacing: 2,
-    marginLeft: 10,
+    fontWeight: "700",
+    color: "#CBD5F5",
+  },
+  logItem: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    padding: 10,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#F9FAFB",
+    marginBottom: 8,
+    gap: 8,
+  },
+  logBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 10,
+    backgroundColor: "#DCFCE7",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  logBadgeText: {
+    fontSize: 11,
+    fontWeight: "900",
+    color: "#16A34A",
+  },
+  logTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#111827",
+  },
+  logSubtitle: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#9CA3AF",
+    marginTop: 2,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(15,23,42,0.6)",
+    backgroundColor: "rgba(15,23,42,0.5)",
+    alignItems: "center",
     justifyContent: "center",
-    padding: 25,
+    padding: 24,
   },
-  modalBody: { backgroundColor: "#fff", borderRadius: 40, padding: 30 },
+  modalCard: {
+    width: "100%",
+    maxWidth: 400,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 28,
+    padding: 24,
+  },
   modalTitle: {
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: "900",
     color: "#0F172A",
-    marginBottom: 25,
   },
-  inputContainer: {
+  modalBtn: {
+    marginTop: 8,
+    paddingVertical: 14,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalBtnText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "900",
+    textTransform: "uppercase",
+    letterSpacing: 1.6,
+  },
+  logInputWrapper: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#F8FAFC",
-    borderRadius: 20,
-    paddingHorizontal: 20,
-    marginBottom: 15,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: "#F1F5F9",
+    borderColor: "#E5E7EB",
+    paddingHorizontal: 14,
+    height: 52,
   },
-  inputIcon: { marginRight: 12 },
-  input: { flex: 1, paddingVertical: 18, fontWeight: "700", color: "#1E293B" },
-  modalSubmit: {
-    backgroundColor: "#2563EB",
-    paddingVertical: 20,
-    borderRadius: 20,
-    alignItems: "center",
-    marginTop: 10,
+  logInput: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#111827",
   },
-  modalSubmitText: {
-    color: "#fff",
-    fontWeight: "900",
-    fontSize: 12,
-    letterSpacing: 2,
-  },
-  cancelBtn: { marginTop: 15, alignItems: "center" },
-  cancelText: { color: "#94A3B8", fontWeight: "700" },
 });
