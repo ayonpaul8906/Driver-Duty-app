@@ -43,23 +43,32 @@ interface TaskRecord {
   vehicleNumber?: string;
 }
 
+interface ActiveDriverRow {
+  id: string;
+  driverName: string;
+  vehicleNumber: string;
+  activeStatus?: string;
+  active?: boolean;
+}
+
 export default function DutyRecords() {
   const router = useRouter();
   const { filter } = useLocalSearchParams(); // corresponds to :status in web
   const status = (filter as string) || "all";
 
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
+  const [activeDrivers, setActiveDrivers] = useState<ActiveDriverRow[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const qDrivers = query(
       collection(db, "users"),
-      where("role", "==", "driver")
+      where("role", "==", "driver"),
     );
     const qTasks = query(
       collection(db, "tasks"),
-      orderBy("createdAt", "desc")
+      orderBy("createdAt", "desc"),
     );
     const driversRef = collection(db, "drivers");
 
@@ -70,7 +79,7 @@ export default function DutyRecords() {
         name: d.data().name,
       }));
 
-      // Listen to operational driver docs (activeStatus, active)
+      // Listen to operational driver docs (activeStatus, active, vehicle)
       const unsubDriverOps = onSnapshot(driversRef, (opsSnap) => {
         const driverOps: Record<
           string,
@@ -85,7 +94,32 @@ export default function DutyRecords() {
           };
         });
 
-        // Listen to tasks
+        // SPECIAL HANDLING FOR ACTIVE TAB:
+        // and do not show previous task details.
+        if (status === "active") {
+          const rows: ActiveDriverRow[] = drivers
+            .map((drv) => {
+              const ops = driverOps[drv.id];
+              if (ops?.active === true && ops?.activeStatus === "active") {
+                return {
+                  id: drv.id,
+                  driverName: drv.name || "Unknown Driver",
+                  vehicleNumber: ops.vehicleNumber || "N/A",
+                  activeStatus: ops.activeStatus,
+                  active: ops.active,
+                };
+              }
+              return null;
+            })
+            .filter(Boolean) as ActiveDriverRow[];
+
+          setActiveDrivers(rows);
+          setTasks([]); // we are not using task-based cards in this tab
+          setLoading(false);
+          return; // do NOT attach task listener for "active" view
+        }
+
+        // For all other statuses, we still want "latest task per driver"
         const unsubTasks = onSnapshot(qTasks, (taskSnap) => {
           const allTasks = taskSnap.docs.map((docSnap) => ({
             id: docSnap.id,
@@ -96,8 +130,7 @@ export default function DutyRecords() {
           const tasksByDriver: Record<string, TaskRecord[]> = {};
           allTasks.forEach((task) => {
             if (!task.driverId) return;
-            if (!tasksByDriver[task.driverId])
-              tasksByDriver[task.driverId] = [];
+            if (!tasksByDriver[task.driverId]) tasksByDriver[task.driverId] = [];
             tasksByDriver[task.driverId].push(task);
           });
 
@@ -121,13 +154,8 @@ export default function DutyRecords() {
 
             if (status === "all") {
               latestMatch = sorted[0];
-            } else if (status === "active") {
-              // show latest task only for drivers that are active (activeStatus="active", active=true)
-              const ops = driverOps[driverId];
-              if (ops?.active === true && ops?.activeStatus === "active") {
-                latestMatch = sorted[0];
-              }
             } else {
+              // assigned / in-progress / completed etc.
               latestMatch = sorted.find((t) => t.status === status);
             }
 
@@ -138,17 +166,22 @@ export default function DutyRecords() {
 
           const withDriverNames = latestTasksPerDriver.map((t) => ({
             ...t,
-            driverName: drivers.find((d) => d.id === t.driverId)?.name || "Unknown Driver",
+            driverName:
+              drivers.find((d) => d.id === t.driverId)?.name ||
+              "Unknown Driver",
             vehicleNumber: driverOps[t.driverId]?.vehicleNumber || "N/A",
           }));
 
+          setActiveDrivers([]); // not used in non-active tabs
           setTasks(withDriverNames);
-          setLoading(false);  
+          setLoading(false);
         });
 
+        // cleanup for task listener
         return () => unsubTasks();
       });
 
+      // cleanup for driverOps listener
       return () => unsubDriverOps();
     });
 
@@ -177,31 +210,41 @@ export default function DutyRecords() {
               console.error("Error during deletion process:", error);
               Alert.alert(
                 "Error",
-                "Failed to complete deletion. Please check permissions."
+                "Failed to complete deletion. Please check permissions.",
               );
             }
           },
         },
-      ]
+      ],
     );
   };
 
-  const filteredTasks = tasks.filter(
-    (t) =>
-      t.passenger?.name
-        ?.toLowerCase()
-        .includes(searchQuery.toLowerCase()) ||
-      t.driverName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      t.tourLocation
-        ?.toLowerCase()
-        .includes(searchQuery.toLowerCase())
-  );
+  // Search behavior:
+  // - For active tab: search within driverName and vehicleNumber only.
+  // - For other tabs: existing search (passenger, driverName, tourLocation).
+  const filteredTasks =
+    status === "active"
+      ? activeDrivers.filter(
+          (d) =>
+            d.driverName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            d.vehicleNumber.toLowerCase().includes(searchQuery.toLowerCase()),
+        )
+      : tasks.filter(
+          (t) =>
+            t.passenger?.name
+              ?.toLowerCase()
+              .includes(searchQuery.toLowerCase()) ||
+            t.driverName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            t.tourLocation
+              ?.toLowerCase()
+              .includes(searchQuery.toLowerCase()),
+        );
 
   const title =
     status === "all"
       ? "Current Duties"
       : status === "active"
-      ? "Latest Active Drivers"
+      ? "Active Drivers"
       : `Latest ${status.replace("-", " ")} per Driver`;
 
   return (
@@ -232,7 +275,9 @@ export default function DutyRecords() {
                   color="#2563EB"
                 />
                 <Text style={styles.subTitle}>
-                  DRIVER LATEST TASK BY STATUS
+                  {status === "active"
+                    ? "CURRENTLY DRIVERS"
+                    : "DRIVER LATEST TASK BY STATUS"}
                 </Text>
               </View>
             </View>
@@ -252,7 +297,11 @@ export default function DutyRecords() {
             style={styles.searchIcon}
           />
           <TextInput
-            placeholder="Search records..."
+            placeholder={
+              status === "active"
+                ? "Search drivers or vehicles..."
+                : "Search records..."
+            }
             placeholderTextColor="#94A3B8"
             style={styles.searchInput}
             onChangeText={setSearchQuery}
@@ -281,11 +330,68 @@ export default function DutyRecords() {
                 </View>
                 <Text style={styles.emptyText}>ZERO ENTRIES FOUND</Text>
                 <Text style={styles.emptySubText}>
-                  No duties match your current filter.
+                  {status === "active"
+                    ? "No drivers are currently active."
+                    : "No duties match your current filter."}
                 </Text>
               </View>
+            ) : status === "active" ? (
+              // ACTIVE TAB: driver-only rows (no passenger/task)
+              (filteredTasks as ActiveDriverRow[]).map((d) => (
+                <View key={d.id} style={styles.taskCard}>
+                  <View style={styles.cardHeader}>
+                    <View
+                      style={[
+                        styles.statusBadge,
+                        { backgroundColor: "#DCFCE7" },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.statusText,
+                          { color: "#15803D" },
+                        ]}
+                      >
+                        Active
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.cardFooter}>
+                    <View style={styles.driverInfo}>
+                      <View style={styles.driverAvatar}>
+                        <MaterialCommunityIcons
+                          name="account-tie"
+                          size={20}
+                          color="#FFFFFF"
+                        />
+                      </View>
+                      <View>
+                        <Text style={styles.footerLabel}>Fleet Driver</Text>
+                        <Text style={styles.footerVal}>{d.driverName}</Text>
+                        <Text
+                          style={{
+                            fontSize: 12,
+                            fontWeight: "700",
+                            color: "#2563EB",
+                            marginTop: 2,
+                          }}
+                        >
+                          <MaterialCommunityIcons
+                            name="car-info"
+                            size={16}
+                            color="#2563EB"
+                          />{" "}
+                          {d.vehicleNumber}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                </View>
+              ))
             ) : (
-              filteredTasks.map((task) => (
+              // OTHER TABS: existing task cards
+              (filteredTasks as TaskRecord[]).map((task) => (
                 <View key={task.id} style={styles.taskCard}>
                   <View style={styles.cardHeader}>
                     <View
@@ -339,9 +445,7 @@ export default function DutyRecords() {
                           size={16}
                           color="#2563EB"
                         />
-                        <Text style={styles.infoText}>
-                          {task.tourTime}
-                        </Text>
+                        <Text style={styles.infoText}>{task.tourTime}</Text>
                       </View>
                     </View>
                   </View>
@@ -368,22 +472,24 @@ export default function DutyRecords() {
                       </View>
                       <View>
                         <Text style={styles.footerLabel}>Fleet Driver</Text>
-                        <Text style={styles.footerVal}>
-                          {task.driverName}
-                        </Text>
-                        <Text style={[{fontSize:12},{fontWeight:700}, { color: '#2563EB' }]}>
+                        <Text style={styles.footerVal}>{task.driverName}</Text>
+                        <Text
+                          style={{
+                            fontSize: 12,
+                            fontWeight: "700",
+                            color: "#2563EB",
+                            marginTop: 2,
+                          }}
+                        >
                           <MaterialCommunityIcons
-                          name="car-info"
-                          size={20}
-                          color="#2563EB"
-                        />
+                            name="car-info"
+                            size={16}
+                            color="#2563EB"
+                          />{" "}
                           {task.vehicleNumber}
                         </Text>
                       </View>
                     </View>
-                    {/* <Text style={styles.idBadge}>
-                      ID: {task.id.slice(-6).toUpperCase()}
-                    </Text> */}
                   </View>
                 </View>
               ))
